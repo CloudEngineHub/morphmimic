@@ -1,0 +1,187 @@
+{
+ "fps": 50,
+ "stateDim": 240,
+ "columns": 156,
+ "clips": [
+  {
+   "id": "walking_random_direction_R_001__A432",
+   "label": "Walk",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 1263
+    },
+    "x2": {
+     "offset": 788112,
+     "frames": 1263
+    },
+    "t2": {
+     "offset": 1576224,
+     "frames": 1263
+    }
+   }
+  },
+  {
+   "id": "dance_basic_padeburee_270_R_loop_001__A324",
+   "label": "Ballet: pas de bourr\u00e9e",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 628
+    },
+    "x2": {
+     "offset": 391872,
+     "frames": 628
+    },
+    "t2": {
+     "offset": 783744,
+     "frames": 628
+    }
+   }
+  },
+  {
+   "id": "dance_basic_turn_v1_360_R_loop_001__A325",
+   "label": "Ballet: turns",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 747
+    },
+    "x2": {
+     "offset": 466128,
+     "frames": 747
+    },
+    "t2": {
+     "offset": 932256,
+     "frames": 747
+    }
+   }
+  },
+  {
+   "id": "dance_hiphop_shuffle_sequence_v_001_R_003__A306",
+   "label": "Street: shuffle",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 1001
+    },
+    "x2": {
+     "offset": 624624,
+     "frames": 1001
+    },
+    "t2": {
+     "offset": 1249248,
+     "frames": 1001
+    }
+   }
+  },
+  {
+   "id": "dance_hiphop_hip_hop_i_R_001__A313",
+   "label": "Street: hip hop",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 691
+    },
+    "x2": {
+     "offset": 431184,
+     "frames": 691
+    },
+    "t2": {
+     "offset": 862368,
+     "frames": 691
+    }
+   }
+  },
+  {
+   "id": "dance_latino_jive_sequence_R_002__A313",
+   "label": "Jive",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 1179
+    },
+    "x2": {
+     "offset": 735696,
+     "frames": 1179
+    },
+    "t2": {
+     "offset": 1471392,
+     "frames": 1179
+    }
+   }
+  },
+  {
+   "id": "dance_macarena_003__A467",
+   "label": "Macarena",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 978
+    },
+    "x2": {
+     "offset": 610272,
+     "frames": 978
+    },
+    "t2": {
+     "offset": 1220544,
+     "frames": 978
+    }
+   }
+  },
+  {
+   "id": "dance_western_ridding_alone_R_003__A306",
+   "label": "Country line dance",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 977
+    },
+    "x2": {
+     "offset": 609648,
+     "frames": 977
+    },
+    "t2": {
+     "offset": 1219296,
+     "frames": 977
+    }
+   }
+  },
+  {
+   "id": "dancing_routine_V002_002__A365",
+   "label": "Dance routine",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 841
+    },
+    "x2": {
+     "offset": 524784,
+     "frames": 841
+    },
+    "t2": {
+     "offset": 1049568,
+     "frames": 841
+    }
+   }
+  },
+  {
+   "id": "victory_dance_robot_dance_180_R_003__A306",
+   "label": "Robot dance",
+   "robots": {
+    "g1": {
+     "offset": 0,
+     "frames": 639
+    },
+    "x2": {
+     "offset": 398736,
+     "frames": 639
+    },
+    "t2": {
+     "offset": 797472,
+     "frames": 639
+    }
+   }
+  }
+ ]
+}

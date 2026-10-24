@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Primary Meta Tags -->
+  <meta name="title" content="MorphMimic: Morphology-Conditioned World Model and Policy Sharing Across Humanoids">
+  <meta name="description" content="One World, One Model: MorphMimic trains one differentiable world model and one motion-tracking policy for the Unitree G1, AgiBot X2 Ultra and Booster T2. In simulation, the shared policy completes more than 99.7% of 128,786 common clips on each robot.">
+  <meta name="keywords" content="humanoid robot, cross-embodiment, world model, motion tracking, SuperMimic, morphology conditioning, MorphMimic, Unitree G1, AgiBot X2 Ultra, Booster T2">
+  <meta name="author" content="Lizhi Yang, Fengze Xie, Yuyang Wang, Lu Gan, Yisong Yue, Aaron D. Ames">
+  <meta name="robots" content="index, follow">
+  <meta name="language" content="English">
+  <link rel="canonical" href="https://lzyang2000.github.io/morphmimic/">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="MorphMimic">
+  <meta property="og:title" content="MorphMimic: Morphology-Conditioned World Model and Policy Sharing Across Humanoids">
+  <meta property="og:description" content="One World, One Model: one world model and one policy track whole-body motion on the Unitree G1, AgiBot X2 Ultra and Booster T2.">
+  <meta property="og:url" content="https://lzyang2000.github.io/morphmimic/">
+  <meta property="og:image" content="https://lzyang2000.github.io/morphmimic/static/videos/banner_poster.jpg">
+  <meta property="og:image:alt" content="The Unitree G1, AgiBot X2 Ultra and Booster T2 side by side in one simulated scene">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="MorphMimic: Morphology-Conditioned World Model and Policy Sharing Across Humanoids">
+  <meta name="twitter:description" content="One World, One Model: one world model and one policy track whole-body motion on the Unitree G1, AgiBot X2 Ultra and Booster T2.">
+  <meta name="twitter:image" content="https://lzyang2000.github.io/morphmimic/static/videos/banner_poster.jpg">
+
+  <!-- Academic/Research Specific -->
+  <meta name="citation_title" content="MorphMimic: Morphology-Conditioned World Model and Policy Sharing Across Humanoids">
+  <meta name="citation_author" content="Yang, Lizhi">
+  <meta name="citation_author" content="Xie, Fengze">
+  <meta name="citation_author" content="Wang, Yuyang">
+  <meta name="citation_author" content="Gan, Lu">
+  <meta name="citation_author" content="Yue, Yisong">
+  <meta name="citation_author" content="Ames, Aaron D.">
+  <meta name="citation_publication_date" content="2026">
+
+  <meta name="theme-color" content="#FF6C0C">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <title>MorphMimic: Morphology-Conditioned World Model and Policy Sharing Across Humanoids</title>
+
+  <link rel="icon" href="static/images/favicon.ico?v=3" sizes="any">
+  <link rel="icon" href="static/images/favicon.svg?v=3" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="static/images/apple-touch-icon.png?v=3">
+
+  <link rel="stylesheet" href="static/css/bulma.min.css">
+  <link rel="stylesheet" href="static/css/index.css">
+  <!-- FontAwesome icons are rendered as inline SVG by fontawesome.all.min.js (loaded below). -->
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <script defer src="static/js/fontawesome.all.min.js"></script>
+  <script defer src="static/js/index.js"></script>
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ScholarlyArticle",
+    "name": "MorphMimic",
+    "headline": "MorphMimic: Morphology-Conditioned World Model and Policy Sharing Across Humanoids",
+    "description": "A cross-embodiment extension of SuperMimic that shares one differentiable world model and one motion-tracking policy across the Unitree G1, AgiBot X2 Ultra and Booster T2.",
+    "author": [
+      { "@type": "Person", "name": "Lizhi Yang", "affiliation": { "@type": "Organization", "name": "California Institute of Technology" } },
+      { "@type": "Person", "name": "Fengze Xie", "affiliation": { "@type": "Organization", "name": "California Institute of Technology" } },
+      { "@type": "Person", "name": "Yuyang Wang", "affiliation": { "@type": "Organization", "name": "California Institute of Technology" } },
+      { "@type": "Person", "name": "Lu Gan", "affiliation": { "@type": "Organization", "name": "Georgia Institute of Technology" } },
+      { "@type": "Person", "name": "Yisong Yue", "affiliation": { "@type": "Organization", "name": "California Institute of Technology" } },
+      { "@type": "Person", "name": "Aaron D. Ames", "affiliation": { "@type": "Organization", "name": "California Institute of Technology" } }
+    ],
+    "datePublished": "2026",
+    "url": "https://lzyang2000.github.io/morphmimic/",
+    "image": "https://lzyang2000.github.io/morphmimic/static/videos/banner_poster.jpg",
+    "keywords": ["humanoid robot", "cross-embodiment", "world model", "motion tracking", "Unitree G1", "AgiBot X2 Ultra", "Booster T2"],
+    "isAccessibleForFree": true
+  }
+  </script>
+
+  <!-- Page-specific styling -->
+  <style>
+    /* Recolor the template accent from blue to Caltech orange */
+    :root {
+      --primary-color: #FF6C0C;
+      --primary-hover: #e85f00;
+      --accent-color: #FF6C0C;
+      --gradient-accent: linear-gradient(135deg, #ffb066 0%, #ff6c0c 100%);
+    }
+    .figure { margin: 0.5rem 0 0 0; }
+    .figure img {
+      width: 100%; height: auto; display: block; background: #fff;
+      border-radius: 10px; border: 1px solid #e6e9ef; padding: 0.6rem;
+    }
+    .figure-caption { font-size: .9rem; color: #4a4a4a; margin-top: .6rem; text-align: left; }
+    .figure-caption strong { color: #363636; }
+    .video-caption {
+      font-size: .95rem;
+      color: #363636;
+      margin-top: .5rem;
+      padding: 0 1rem;
+    }
+    .teaser-video video, .clip-video video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #1f3550;
+      border-radius: 10px;
+      border: 1px solid #e6e9ef;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      display: block;
+    }
+    .clip-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.25rem 1.25rem;
+      margin-top: 1rem;
+    }
+    .clip-video p { font-size: 0.92rem; font-weight: 600; color: #363636; margin-top: 0.4rem; text-align: center; }
+    .clip-video p span { font-weight: 400; color: #6b7280; }
+    /* Hardware: the portrait upper-body video on the left, as tall as the two landscape videos
+       (walking, teleoperation) stacked on the right. One column on phones. The videos are
+       positioned absolutely so that only the frames, not the videos, size the grid rows. */
+    .hw-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.69fr) minmax(0, 1fr);
+      grid-template-areas: "motion walk" "motion teleop";
+      gap: 1.25rem;
+      margin-top: 1rem;
+    }
+    .hw-slot { display: flex; flex-direction: column; min-width: 0; }
+    .hw-slot.hw-motion { grid-area: motion; }
+    .hw-slot.hw-walk { grid-area: walk; }
+    .hw-slot.hw-teleop { grid-area: teleop; }
+    .hw-slot .hw-frame {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #15181d;
+    }
+    .hw-slot.hw-motion .hw-frame { aspect-ratio: auto; flex: 1 1 0; min-height: 0; }
+    .hw-slot video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+    .hw-slot p { font-size: 0.92rem; color: #363636; margin-top: 0.4rem; text-align: center; }
+    /* Table I */
+    .table-wrap { overflow-x: auto; margin-top: 1rem; -webkit-overflow-scrolling: touch; }
+    table.results {
+      width: 100%; min-width: 620px; border-collapse: collapse; font-size: 0.9rem;
+      font-variant-numeric: tabular-nums; background: #fff;
+    }
+    table.results th, table.results td { padding: 0.45rem 0.6rem; text-align: center; border: 0; }
+    table.results thead tr:first-child th { border-top: 2px solid #363636; }
+    table.results thead tr:last-child th { border-bottom: 1px solid #363636; font-weight: 600; color: #4a4a4a; }
+    table.results thead th.robot { border-bottom: 1px solid #c9ced6; }
+    table.results tbody tr.group-end td { border-bottom: 1px solid #c9ced6; }
+    table.results tbody tr:last-child td { border-bottom: 2px solid #363636; }
+    table.results td.left, table.results th.left { text-align: left; }
+    table.results td.iface { font-weight: 600; vertical-align: middle; }
+    table.results td.iface.group-end { border-bottom: 1px solid #c9ced6; }
+    table.results tr.shared td:not(.iface) { background: #fff7f0; }
+    .table-caption { font-size: .9rem; color: #4a4a4a; margin-top: 0.6rem; text-align: left; }
+    /* Hero banner: looping video behind the title, blurred + darkened
+       (the ::before poster is the fallback while the video loads or if it fails) */
+    .hero-banner { position: relative; overflow: hidden; }
+    .hero-banner::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: url('static/videos/hero_poster.jpg');
+      background-size: cover;
+      background-position: center 40%;
+      background-repeat: no-repeat;
+      filter: blur(2.5px) brightness(0.5) saturate(1.05);
+      transform: scale(1.1);
+      z-index: 0;
+    }
+    .hero-banner .hero-bg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center 40%;
+      filter: blur(2.5px) brightness(0.5) saturate(1.05);
+      transform: scale(1.1);
+      z-index: 0;
+    }
+    .hero-banner .hero-body { position: relative; z-index: 1; padding-top: 4.5rem; padding-bottom: 4.5rem; }
+    .hero-banner .subtitle,
+    .hero-banner .publication-authors,
+    .hero-banner .publication-authors sup { color: #ffffff !important; }
+    .hero-banner .button.is-dark { background: #ffffff; color: #1b1b1b; border: none; }
+    .hero-banner .button.is-dark:hover { background: #ffe7d3; color: #000; }
+    /* Paper and Code: placeholders until the report and the code are public */
+    .soon-tag { font-size: 0.72rem; font-weight: 600; color: #8a6a52; margin-left: 0.35rem; }
+    .hw-pending { margin-top: 1.1rem; display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap; }
+    .pending-pill {
+      display: inline-block; padding: 0.35rem 0.85rem; border-radius: 999px;
+      background: #f3f4f6; color: #4b5563; font-size: 0.9rem; font-weight: 600;
+      border: 1px dashed #c9ced6;
+    }
+    .title-logo {
+      height: 1.15em;
+      width: auto;
+      vertical-align: -0.22em;
+      margin-right: 0.28em;
+      filter: drop-shadow(0 2px 12px rgba(0,0,0,0.45));
+    }
+    /* Film: full-screen player opened from any [data-film] link */
+    dialog.film { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0;
+      padding: 0; border: 0; background: #000; color: #fff; display: none; align-items: center; justify-content: center; }
+    dialog.film[open] { display: flex; }
+    dialog.film::backdrop { background: #000; }
+    dialog.film video { display: block; width: min(100vw, calc(100vh * 16 / 9)); width: min(100vw, calc(100dvh * 16 / 9));
+      aspect-ratio: 16 / 9; background: #000; }
+    .film-x { position: absolute; z-index: 1; top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right));
+      width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(66,66,69,.72); color: #fff;
+      display: grid; place-items: center; cursor: pointer; }
+    .film-x:hover { background: rgba(88,88,92,.8); }
+    .film-x svg { width: 14px; height: 14px; }
+    .film-link { margin: -0.4rem 0 1.1rem; }
+    .film-link a { font-weight: 600; color: #FF6C0C; display: inline-flex; align-items: center; gap: 0.35rem; }
+    .film-link svg { width: 18px; height: 18px; }
+    .brand {
+      color: #FF6C0C !important;
+      letter-spacing: 1px;
+      text-shadow: 0 2px 12px rgba(0,0,0,0.45);
+    }
+    .affiliations { font-size: 1rem !important; margin-top: 0.35rem; }
+    .equal-note { font-size: 0.85rem; color: #e5e7eb; margin-top: 0.2rem; }
+    /* Institution logos */
+    .institution-logos {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 40px;
+      margin: 1.4rem auto 0.25rem auto;
+    }
+    .institution-logos img { width: auto; display: block; }
+    .institution-logos img.logo-caltech { height: 68px; }
+    .institution-logos img.logo-gt { height: 40px; }
+    /* Funding logo in the footer */
+    .funding-title { font-weight: 600; color: #363636; margin-bottom: 0.9rem !important; }
+    .funding-logos { display: flex; justify-content: center; align-items: center; margin-bottom: 0.9rem; }
+    .funding-logos img { height: 46px; width: auto; display: block; }
+    .funding-note { font-size: 0.85rem; color: #6b7280; }
+    /* Demo embed. The iframe is created on click, so a visitor who never launches it downloads
+       none of the demo. */
+    .demo-frame {
+      position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 420px;
+      border-radius: 14px; overflow: hidden; background: #eef2f7;
+      box-shadow: 0 10px 34px rgba(15, 18, 22, 0.28);
+    }
+    .demo-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+    .demo-poster {
+      position: absolute; inset: 0; border: 0; padding: 0 1rem; width: 100%; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 0.9rem; background-size: cover; background-position: center 40%; font: inherit;
+    }
+    .demo-poster::before { content: ""; position: absolute; inset: 0; background: rgba(11, 14, 19, 0.62); }
+    .demo-poster > * { position: relative; }
+    .demo-launch {
+      display: inline-flex; align-items: center; gap: 0.6rem; padding: 0.85rem 1.6rem;
+      border-radius: 999px; background: var(--primary-color); color: #fff;
+      font-weight: 700; font-size: 1.05rem; box-shadow: 0 6px 20px rgba(255, 108, 12, 0.4);
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .demo-poster:hover .demo-launch { background: var(--primary-hover); transform: translateY(-2px); }
+    .demo-poster:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
+    .demo-headline { color: #fff; font-weight: 700; font-size: 1.15rem; }
+    .demo-sub { color: #cfd8e2; font-size: 0.86rem; max-width: 32rem; line-height: 1.45; }
+    .demo-bar {
+      display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem;
+      flex-wrap: wrap; margin-top: 0.7rem;
+    }
+    .demo-bar .button[hidden] { display: none; } /* Bulma's .button would otherwise show it */
+    .demo-note { font-size: .88rem; color: #6b7280; margin-top: 0.75rem; }
+    .content a { color: var(--primary-color); }
+    .content a:hover { color: var(--primary-hover); }
+    /* Bulma's .hero is a flex column, so its container would otherwise grow to the widest
+       child (the results table) on narrow screens instead of letting the table scroll. */
+    .hero > .container { min-width: 0; width: 100%; }
+    .credits { font-size: 0.9rem; }
+    @media screen and (max-width: 768px) {
+      /* Taller than 16:9 on phones: the demo stacks the clip picker, a square view and its
+         controls, and the extra height keeps the view from shrinking. Nearly full width, with a
+         side gutter of about 16 px where a thumb can scroll the page past the demo. */
+      .demo-frame { aspect-ratio: auto; height: min(150vw, 82vh); min-height: 520px; border-radius: 10px;
+                    margin-left: -0.5rem; margin-right: -0.5rem; width: calc(100% + 1rem); }
+      .demo-headline { font-size: 1rem; }
+      .clip-grid { grid-template-columns: minmax(0, 1fr); }
+      .hw-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "motion" "walk" "teleop"; }
+      .hw-slot.hw-motion .hw-frame { flex: none; aspect-ratio: 9 / 16; width: min(100%, calc(72vh * 9 / 16)); margin: 0 auto; }
+      .institution-logos { gap: 28px; }
+      .content.has-text-justified, .content.has-text-justified p { text-align: left; }
+      .institution-logos img.logo-caltech { height: 54px; }
+      .institution-logos img.logo-gt { height: 32px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Scroll to Top Button -->
+  <button class="scroll-to-top" onclick="scrollToTop()" title="Scroll to top" aria-label="Scroll to top">
+    <i class="fas fa-chevron-up"></i>
+  </button>
+
+  <main id="main-content">
+  <section class="hero hero-banner">
+    <!-- static/js/index.js starts the banner and the teaser unless the visitor asks for reduced
+         motion, in which case both show their posters. -->
+    <video class="hero-bg" data-autoplay loop muted playsinline preload="auto" aria-hidden="true"
+           poster="static/videos/hero_poster.jpg">
+      <source src="static/videos/hero.mp4" type="video/mp4">
+    </video>
+    <div class="hero-body">
+      <div class="container is-max-desktop">
+        <div class="columns is-centered">
+          <div class="column has-text-centered">
+            <h1 class="title is-1 publication-title brand"><img src="static/images/morphmimic_logo.svg" alt="" class="title-logo">MorphMimic</h1>
+            <h2 class="subtitle is-4" style="margin-top:-0.4rem;">Morphology-Conditioned World Model and Policy Sharing Across Humanoids</h2>
+            <div class="is-size-5 publication-authors">
+              <span class="author-block">Lizhi Yang<sup>1</sup>,</span>
+              <span class="author-block">Fengze Xie<sup>1*</sup>,</span>
+              <span class="author-block">Yuyang Wang<sup>1*</sup>,</span>
+              <span class="author-block">Lu Gan<sup>2</sup>,</span>
+              <span class="author-block">Yisong Yue<sup>1</sup>,</span>
+              <span class="author-block">Aaron D. Ames<sup>1</sup></span>
+            </div>
+
+            <div class="is-size-5 publication-authors affiliations">
+              <span class="author-block"><sup>1</sup>California Institute of Technology</span>
+              <span class="author-block">&nbsp;&nbsp;<sup>2</sup>Georgia Institute of Technology</span>
+            </div>
+            <div class="equal-note">* Equal contribution</div>
+
+            <div class="has-text-centered">
+              <div class="institution-logos">
+                <img class="logo-caltech" src="static/images/caltech_trans.png" alt="California Institute of Technology">
+                <img class="logo-gt" src="static/images/georgia_tech.svg" alt="Georgia Institute of Technology">
+              </div>
+            </div>
+
+            <div class="column has-text-centered">
+              <div class="publication-links">
+                <!-- Paper and Code have no link until the report and the code are public. -->
+                <span class="link-block">
+                  <a href="static/morphmimic.pdf" target="_blank" rel="noopener"
+                     class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fas fa-file-pdf"></i></span>
+                    <span>Paper</span>
+                  </a>
+                </span>
+
+                <span class="link-block">
+                  <a href="https://github.com/lzyang2000/morphmimic" target="_blank" rel="noopener"
+                     class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fab fa-github"></i></span>
+                    <span>Code</span>
+                  </a>
+                </span>
+                <span class="link-block">
+                  <a href="static/videos/morphmimic.mp4" data-film
+                     class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fas fa-play-circle"></i></span>
+                    <span>Video</span>
+                  </a>
+                </span>
+
+                <span class="link-block">
+                  <a href="#demo" class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fas fa-play"></i></span>
+                    <span>Demo</span>
+                  </a>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+<!-- Teaser -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">One World, One Model</h2>
+        <p class="film-link"><a href="static/videos/morphmimic.mp4" data-film>Watch the film <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7.2 5.8v6.4l5-3.2z" fill="currentColor"/></svg></a></p>
+        <div class="teaser-video">
+          <video poster="static/videos/dance_hiphop_shuffle_sequence_v_001_R_003__A306_poster.jpg"
+                 data-autoplay loop muted playsinline controls preload="metadata">
+            <source src="static/videos/dance_hiphop_shuffle_sequence_v_001_R_003__A306.mp4" type="video/mp4">
+          </video>
+          <p class="video-caption has-text-centered">
+            The Unitree G1, AgiBot X2 Ultra and Booster T2 (left to right) dance a street shuffle with one
+            shared policy. Simulated in MuJoCo with unified_v2 at iteration 76,000.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End teaser -->
+
+<!-- Demo -->
+<section class="section hero is-light" id="demo">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">See it in your browser</h2>
+
+        <div class="demo-frame" id="demoFrame">
+          <button class="demo-poster" id="demoPoster" type="button"
+                  style="background-image:url('static/videos/banner_poster.jpg')"
+                  aria-label="Launch the live demo">
+            <span class="demo-launch">
+              <i class="fas fa-play"></i> Launch the demo
+            </span>
+            <span class="demo-headline">Three robots and one policy, running live</span>
+            <span class="demo-sub">About 90&nbsp;MB loads when you click. Needs WebGL.</span>
+          </button>
+        </div>
+
+        <div class="demo-bar" id="demoBar" hidden>
+          <span>
+            <button class="button is-small is-rounded" id="demoFullscreen" type="button">
+              <span class="icon is-small"><i class="fas fa-expand"></i></span>
+              <span>Fullscreen</span>
+            </button>
+            <a class="button is-small is-rounded" href="demo/" target="_blank" rel="noopener">
+              <span class="icon is-small"><i class="fas fa-external-link-alt"></i></span>
+              <span>Open in new tab</span>
+            </a>
+          </span>
+        </div>
+
+        <p class="demo-note">
+          The shared policy runs live in your browser (about 90&nbsp;MB on first load). Drag a robot to push it.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  (function () {
+    var frame = document.getElementById('demoFrame');
+    var poster = document.getElementById('demoPoster');
+    var bar = document.getElementById('demoBar');
+    var iframe = null;
+
+    function launch() {
+      if (iframe) return;
+      iframe = document.createElement('iframe');
+      iframe.title = 'MorphMimic live demo';
+      iframe.allow = 'fullscreen';
+      iframe.setAttribute('allowfullscreen', '');
+      iframe.src = 'demo/index.html';
+      frame.appendChild(iframe);
+      poster.remove();
+      bar.hidden = false;
+
+      // Tell the demo to stop drawing while it is scrolled out of view.
+      if ('IntersectionObserver' in window) {
+        new IntersectionObserver(function (entries) {
+          for (var i = 0; i < entries.length; i++) {
+            if (!iframe.contentWindow) continue;
+            iframe.contentWindow.postMessage(
+              { smxDemo: entries[i].isIntersecting ? 'resume' : 'pause' }, '*'
+            );
+          }
+        }, { threshold: 0.05 }).observe(frame);
+      }
+    }
+
+    poster.addEventListener('click', launch);
+    var fullscreen = document.getElementById('demoFullscreen');
+    if (!frame.requestFullscreen && !frame.webkitRequestFullscreen) {
+      fullscreen.hidden = true; // e.g. iPhone Safari; "Open in new tab" remains
+    }
+    fullscreen.addEventListener('click', function () {
+      if (frame.requestFullscreen) frame.requestFullscreen();
+      else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
+    });
+  })();
+</script>
+<!-- End demo -->
+
+<!-- Method -->
+<section class="section" id="method">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-full">
+        <h2 class="title is-3">Method</h2>
+        <div class="content has-text-justified" style="margin-top:1.4rem;">
+          <p>
+            MorphMimic builds on an independent reimplementation of
+            <a href="https://supermimic.github.io/" target="_blank" rel="noopener">SuperMimic</a>, which trains a
+            tracker by differentiating through short rollouts of a learned dynamics model. A canonical layout
+            maps each robot's joints by kinematic function onto a common joint order and 14 tracked bodies, and
+            a 125-value descriptor of actuation, geometry and mass conditions the shared networks.
+            Normalization statistics, reference motions and replay data stay robot-specific.
+          </p>
+        </div>
+
+        <figure class="figure" style="margin-top:1.25rem;">
+          <a href="static/images/fig2.png" target="_blank" rel="noopener" title="Open the full-size figure"><img src="static/images/fig2.png" width="2797" height="1504" loading="lazy"
+               alt="Diagram of the shared policy: per-robot reference goals pass through a shared motion encoder to 32-dimensional latents, a shared policy decoder with FiLM on the morphology vector, per-robot action maps and replay buffers, a five-point encoder below, and a shared world model for 32-step imagined rollouts."></a>
+          <figcaption class="figure-caption">
+            <strong>Figure 1.</strong> Shared policy and command interfaces. Robot-specific normalizers feed a
+            shared motion encoder, whose 32-dimensional latent enters the shared decoder with proprioception and
+            morphology, and morphology also modulates decoder features through FiLM. Motion latents of
+            corresponding frames align to their mean, and the five-point encoder matches its robot's motion
+            latent.
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End method -->
+
+<!-- Results -->
+<section class="section hero is-light" id="results">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-full">
+        <h2 class="title is-3">Results</h2>
+        <div class="content has-text-justified">
+          <p>
+            We compare four configurations, each trained for 40,000 iterations with 4096 environments per
+            robot: a specialist per robot, a shared world model, a shared policy and critics, and the unified
+            model that shares all three. Each of the 128,786 common clips runs once from its first frame under
+            the deterministic policy. A shared configuration matches a specialist when its mean normalized return
+            is within 0.02, a tolerance set before the evaluation.
+          </p>
+        </div>
+
+        <div class="table-wrap">
+          <table class="results">
+            <thead>
+              <tr>
+                <th class="left" rowspan="2">Interface</th>
+                <th class="left" rowspan="2">Configuration</th>
+                <th class="robot" colspan="2">G1</th>
+                <th class="robot" colspan="2">X2 Ultra</th>
+                <th class="robot" colspan="2">T2</th>
+              </tr>
+              <tr>
+                <th>Completion (%) &uarr;</th><th>Mean return &uarr;</th>
+                <th>Completion (%) &uarr;</th><th>Mean return &uarr;</th>
+                <th>Completion (%) &uarr;</th><th>Mean return &uarr;</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="left iface group-end" rowspan="4">Full motion</td>
+                <td class="left">Specialist</td>
+                <td>99.797</td><td>0.9306</td><td>99.818</td><td>0.9253</td><td>99.860</td><td><strong>0.9448</strong></td>
+              </tr>
+              <tr>
+                <td class="left">Shared WM</td>
+                <td>99.734</td><td>0.9274</td><td>99.845</td><td>0.9269</td><td>99.861</td><td>0.9401</td>
+              </tr>
+              <tr>
+                <td class="left">Shared policy</td>
+                <td><strong>99.806</strong></td><td>0.9317</td><td>99.861</td><td>0.9278</td><td>99.775</td><td>0.9404</td>
+              </tr>
+              <tr class="shared group-end">
+                <td class="left">Unified</td>
+                <td>99.747</td><td><strong>0.9358</strong></td><td><strong>99.891</strong></td><td><strong>0.9304</strong></td><td><strong>99.886</strong></td><td>0.9398</td>
+              </tr>
+              <tr>
+                <td class="left iface" rowspan="4">Five-point</td>
+                <td class="left">Specialist</td>
+                <td><strong>99.849</strong></td><td><strong>0.8807</strong></td><td>99.841</td><td>0.8689</td><td>99.857</td><td><strong>0.9014</strong></td>
+              </tr>
+              <tr>
+                <td class="left">Shared WM</td>
+                <td>99.720</td><td>0.8681</td><td>99.851</td><td>0.8788</td><td><strong>99.875</strong></td><td>0.8979</td>
+              </tr>
+              <tr>
+                <td class="left">Shared policy</td>
+                <td>99.769</td><td>0.8781</td><td>99.847</td><td><strong>0.8855</strong></td><td>99.766</td><td>0.8976</td>
+              </tr>
+              <tr class="shared">
+                <td class="left">Unified</td>
+                <td>99.729</td><td>0.8626</td><td><strong>99.880</strong></td><td>0.8774</td><td>99.852</td><td>0.8890</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-caption">
+          <strong>Table I.</strong> The four 40,000-iteration sharing configurations on the 128,786-clip common
+          set. Specialist has a separate world model and policy per robot, shared WM shares only the world model,
+          shared policy shares the policy and critics, and unified shares the world model, policy and critics.
+          Completion is the fraction of clips that reach the final frame without early termination. Higher is
+          better (&uarr;); the best value in each robot and interface block is in bold.
+        </p>
+
+        <div class="content has-text-justified" style="margin-top:1rem;">
+          <p>
+            Every shared configuration stays within 0.02 mean return of its specialist on all six robot and
+            interface pairs. The largest gap is 0.018, for the unified model on G1 five-point tracking. No
+            configuration completes the most clips everywhere: the unified model leads on both X2 interfaces and
+            on T2 full-motion tracking. The unified run uses 16.3 GPU-hours, against 13.9 for the three
+            specialists together, and gives one set of weights for all three robots.
+          </p>
+          <p>
+            Across the four configurations, five-point commands lower mean return by 0.04 to 0.07 on each
+            robot.
+          </p>
+        </div>
+
+        <figure class="figure" style="margin-top:1.5rem;">
+          <a href="static/images/fig3.jpg" target="_blank" rel="noopener" title="Open the full-size figure"><img src="static/images/fig3.jpg" width="2868" height="917" loading="lazy"
+               alt="Five-point tracking: the G1, X2 Ultra and T2 walking and waving, with colored spheres at the pelvis, ankle and wrist targets, fading trails of past targets and curves for the ten-frame preview."></a>
+          <figcaption class="figure-caption">
+            <strong>Figure 2.</strong> Five-point tracking with the shared policy during the walking (left) and
+            waving (right) phases of one reference motion. Spheres mark the current pelvis, ankle and wrist targets, solid curves the ten-frame
+            preview, and fading trails the past targets (display only).
+          </figcaption>
+        </figure>
+
+        <figure class="figure" style="margin-top:1.5rem;">
+          <a href="static/images/fig4.jpg" target="_blank" rel="noopener" title="Open the full-size figure"><img src="static/images/fig4.jpg" width="2866" height="976" loading="lazy"
+               alt="Broad jump, jogging and a dance pirouette, five poses each, for the Unitree G1, AgiBot X2 Ultra and Booster T2."></a>
+          <figcaption class="figure-caption">
+            <strong>Figure 3.</strong> Broad jump, jogging and dance (pirouette) with the same shared full-motion
+            policy on the G1, X2 Ultra and T2. Each strip shows five simulator poses in time order from left to
+            right. Headings and horizontal spacing
+            are adjusted for display.
+          </figcaption>
+        </figure>
+
+        <h3 class="title is-4" style="margin-top:2.5rem;">Ten clips in simulation</h3>
+        <div class="content has-text-justified">
+          <p>
+            The G1, X2 Ultra and T2 (left to right) track each clip through the full-motion interface.
+            Simulated in MuJoCo with unified_v2 at iteration 76,000. The results above are the paper's, at 40,000 iterations.
+          </p>
+        </div>
+        <div class="clip-grid" id="clipGrid">
+          <div class="clip-video">
+            <video data-src="static/videos/walking_random_direction_R_001__A432.mp4" poster="static/videos/walking_random_direction_R_001__A432_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Walk</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_basic_padeburee_270_R_loop_001__A324.mp4" poster="static/videos/dance_basic_padeburee_270_R_loop_001__A324_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Ballet: pas de bourrée</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_basic_turn_v1_360_R_loop_001__A325.mp4" poster="static/videos/dance_basic_turn_v1_360_R_loop_001__A325_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Ballet: turns</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_hiphop_shuffle_sequence_v_001_R_003__A306.mp4" poster="static/videos/dance_hiphop_shuffle_sequence_v_001_R_003__A306_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Street: shuffle</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_hiphop_hip_hop_i_R_001__A313.mp4" poster="static/videos/dance_hiphop_hip_hop_i_R_001__A313_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Street: hip hop</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_latino_jive_sequence_R_002__A313.mp4" poster="static/videos/dance_latino_jive_sequence_R_002__A313_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Jive</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_macarena_003__A467.mp4" poster="static/videos/dance_macarena_003__A467_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Macarena</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dance_western_ridding_alone_R_003__A306.mp4" poster="static/videos/dance_western_ridding_alone_R_003__A306_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Country line dance</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/dancing_routine_V002_002__A365.mp4" poster="static/videos/dancing_routine_V002_002__A365_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Dance routine</p>
+          </div>
+          <div class="clip-video">
+            <video data-src="static/videos/victory_dance_robot_dance_180_R_003__A306.mp4" poster="static/videos/victory_dance_robot_dance_180_R_003__A306_poster.jpg" loop muted playsinline controls preload="none"></video>
+            <p>Robot dance</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End results -->
+
+<!-- Hardware -->
+<section class="section" id="hardware">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-full">
+        <h2 class="title is-3">Hardware</h2>
+        <div class="content has-text-justified">
+          <p>
+            We run the shared policy from Table I, trained for 40,000 iterations in simulation, directly on a
+            physical Unitree G1, with feedback from its pelvis IMU and 29 joint encoders. Through the full
+            joint-space motion interface, the G1 dances, walks and follows an operator who wears a PICO headset,
+            two hand controllers and two ankle trackers.
+          </p>
+        </div>
+        <div class="hw-grid">
+          <div class="hw-slot hw-motion">
+            <div class="hw-frame">
+              <video data-src="static/videos/g1_hardware_motion.mp4" poster="static/videos/g1_hardware_motion_poster.jpg" loop muted playsinline controls preload="none"></video>
+            </div>
+            <p>Unitree G1 hardware: upper-body motion (full-motion interface)</p>
+          </div>
+          <div class="hw-slot hw-walk">
+            <div class="hw-frame">
+              <video data-src="static/videos/g1_hardware_walk.mp4" poster="static/videos/g1_hardware_walk_poster.jpg" loop muted playsinline controls preload="none"></video>
+            </div>
+            <p>Unitree G1 hardware: walking (full-motion interface)</p>
+          </div>
+          <div class="hw-slot hw-teleop">
+            <div class="hw-frame">
+              <video data-src="static/videos/g1_hardware_teleop.mp4" poster="static/videos/g1_hardware_teleop_poster.jpg" loop muted playsinline controls preload="none"></video>
+            </div>
+            <p>Unitree G1 hardware: teleoperation (full-motion interface)</p>
+          </div>
+        </div>
+        <p class="hw-pending">
+          <span class="pending-pill">AgiBot X2 Ultra: hardware pending</span>
+          <span class="pending-pill">Booster T2: hardware pending</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End hardware -->
+
+<!-- BibTeX citation -->
+<section class="section hero is-light" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <div class="bibtex-header">
+      <h2 class="title">BibTeX</h2>
+      <button class="copy-bibtex-btn" type="button" onclick="copyBibTeX()" title="Copy BibTeX to clipboard">
+        <i class="fas fa-copy"></i>
+        <span class="copy-text">Copy</span>
+      </button>
+    </div>
+    <pre id="bibtex-code"><code>@misc{yang2026morphmimic,
+  title        = {{MorphMimic}: Morphology-Conditioned World Model and Policy Sharing Across Humanoids},
+  author       = {Yang, Lizhi and Xie, Fengze and Wang, Yuyang and Gan, Lu and Yue, Yisong and Ames, Aaron D.},
+  year         = {2026},
+  note         = {Technical report},
+  howpublished = {\url{https://lzyang2000.github.io/morphmimic/}}
+}</code></pre>
+  </div>
+</section>
+<!-- End BibTeX citation -->
+
+  <footer class="footer">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content credits">
+          <p class="has-text-centered funding-title">This work is supported by:</p>
+          <div class="funding-logos">
+            <a href="https://www.dow.com/en-us.html" target="_blank" rel="noopener" title="The Dow Chemical Company">
+              <img src="static/images/dow.svg" alt="The Dow Chemical Company">
+            </a>
+          </div>
+          <p class="has-text-centered funding-note">The Dow Chemical Company project&nbsp;#227027AW.</p>
+          <p class="has-text-centered">
+            Reference motions come from the BONES-SEED dataset. Motion Data by
+            <a href="https://bones.studio/" target="_blank" rel="noopener">Bones Studio</a>.
+            Training uses <a href="https://github.com/mujocolab/mjlab" target="_blank" rel="noopener">mjlab</a>,
+            and the demo and videos use <a href="https://mujoco.org/" target="_blank" rel="noopener">MuJoCo</a>.
+          </p>
+          <p class="has-text-centered">
+            This page's template is adapted from the <a href="https://github.com/eliahuhorwitz/Academic-project-page-template" target="_blank" rel="noopener">Academic Project Page Template</a>,
+            which builds on the <a href="https://nerfies.github.io" target="_blank" rel="noopener">Nerfies</a> project page
+            (<a rel="license noopener" href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank">CC BY-SA 4.0</a>).
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+  </main>
+  <dialog class="film" id="film" aria-label="MorphMimic film">
+    <button class="film-x" id="filmX" type="button" aria-label="Close the film"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <video id="filmV" controls playsinline preload="none" poster="static/videos/morphmimic_poster.jpg" data-src="static/videos/morphmimic.mp4"></video>
+  </dialog>
+  </body>
+  </html>
