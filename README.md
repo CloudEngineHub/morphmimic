@@ -4,6 +4,11 @@ Lizhi Yang, Fengze Xie\*, Yuyang Wang\*, Lu Gan, Yisong Yue, Aaron D. Ames
 
 \* Equal contribution.
 
+[[Website]](https://lzyang2000.github.io/morphmimic/)
+[[Paper]](https://lzyang2000.github.io/morphmimic/static/morphmimic.pdf)
+[[Video]](https://lzyang2000.github.io/morphmimic/static/videos/morphmimic.mp4)
+[[Live demo]](https://lzyang2000.github.io/morphmimic/demo/)
+
 > **Disclaimer.** MorphMimic builds on SuperMimic (Liao, Shao, Long, Zakka, Horowitz,
 > Abbeel and Sreenath, UC Berkeley; [citation below](#citation)). The base algorithm is
 > our own implementation of that paper, written from the paper alone. It is not the
@@ -348,22 +353,32 @@ The sim run ends 2 s after the last clip.
 The base method is SuperMimic's. These are the places where we had to fill a gap or
 chose differently:
 
-- Only the world model's termination head is learned. Its reward and observation heads
-  are computed analytically (the paper allows either).
+- The world model's reward and observation heads are computed analytically; the
+  paper allows either. Its termination head is the only learned part, and by default
+  it is a four-parameter monotone hazard on the height and tilt margins
+  (`--termination`: `hazard`, an MLP with `learned`, or the fixed analytic `soft`).
 - The world model works in the pelvis frame and also gets the gravity direction and
-  body heights as inputs, as in SuperTrack.
-- The critic and the world model have LayerNorm after each hidden layer, and the
-  critic's targets are clamped at 10 (the largest possible return). Without these our
-  full-set runs diverged.
-- The first 500 iterations train only the world model, and imagined rollouts never run
-  past the end of a clip.
-- Episodes end at the last frame of their clip, so the reset sampler normalises each
-  bin's return by the best return the episode could have reached.
-- The MLPs run in bfloat16 autocast (about 1.5 times faster than TF32).
-- Goals are position-free, and training randomises the actuator delay (0 to 40 ms), so
-  the policy runs from the IMU and joint encoders alone.
+  body heights as inputs, as in SuperTrack (`--wm-frame heading` for the yaw-only
+  frame without them).
+- The critic and the world model have LayerNorm after each hidden layer
+  (`--no-critic-layer-norm`, `--no-wm-layer-norm`), and the critic's targets are
+  clamped at R_max / (1 - γ) = 10, the largest possible return
+  (`--no-critic-target-clip`). Without these our full-set runs diverged.
+- The first 500 iterations train only the world model (`--wm-only-iters 0` to skip),
+  and imagined rollouts start only where they cannot reach the end of a clip
+  (`--no-avoid-clip-end`).
+- Episodes end at the last frame of their clip or after 10 s, whichever comes first,
+  so the reset sampler normalises each bin's return by the best return the episode
+  could have reached in that time (`--reset-norm actual` normalises by the steps
+  actually run instead).
+- The MLPs run in bfloat16 autocast, about 1.5 times faster than TF32 in our runs
+  (`--no-bf16`).
+- Goals are position-free, so the policy runs from the IMU and joint encoders alone.
+  This is fixed in the code, not a flag.
+- Training randomises the actuator delay (0 to 40 ms, resampled every physics step)
+  for robustness to latency on the real robot (`--no-actuator-delay`).
 
-Each of these has a flag to turn it off (see `train --help`).
+See `train --help` for the full list of options.
 
 ## License
 
