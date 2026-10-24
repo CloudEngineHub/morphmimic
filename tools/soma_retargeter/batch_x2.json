@@ -1,0 +1,10 @@
+{
+    "import_folder": "__IMPORT__",
+    "export_folder": "__EXPORT__",
+    "batch_size": 10,
+    "retargeter": "Newton",
+    "retarget_source": "soma",
+    "retarget_target": "agibot_x2ultra",
+    "retarget_source_facing_direction": "Mujoco",
+    "extra_robot_paths": ["__ROBOTS__"]
+}

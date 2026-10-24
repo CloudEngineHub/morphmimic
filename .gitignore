@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+wandb/
+*.egg-info/
+outputs/
+/data/
+.superpowers/
+videos/
+MUJOCO_LOG.TXT
+deploy/third_party/

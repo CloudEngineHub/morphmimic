@@ -1,0 +1,62 @@
+[build-system]
+requires = ["uv_build>=0.8.19,<0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "morphmimic"
+version = "0.1.0"
+description = "MorphMimic: morphology-conditioned world model and policy sharing across humanoids. A cross-embodiment extension of SuperMimic (arXiv 2610.28480) on mjlab for the Unitree G1, AgiBot X2 Ultra and Booster T2"
+requires-python = "==3.11.*"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "mjlab==1.6.0",
+  "torch>=2.8.0",
+  "warp-lang>=1.14,<1.18",
+  "pyyaml",
+  "pandas",
+  "tyro>=1.0.1",
+  "tensorboard>=2.20.0",
+  "wandb>=0.22.3",
+  "torchrunx>=0.3.4",
+]
+
+[project.entry-points."mjlab.tasks"]
+morphmimic = "morphmimic"
+
+[dependency-groups]
+dev = ["ruff"]
+export = [
+    "onnx>=1.23.2",
+    "onnxruntime>=1.31.0",
+    "onnxscript>=0.7.2",
+    "pyzmq",
+    "msgpack",
+]
+teleop = [
+    "pyzmq",
+    "msgpack",
+    "general-motion-retargeting",
+]
+
+[tool.uv.build-backend]
+module-name = "morphmimic"
+module-root = "src"
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+general-motion-retargeting = { workspace = true, editable = true }
+
+[tool.uv.workspace]
+members = [
+    "third_party/GMR",
+]
+
