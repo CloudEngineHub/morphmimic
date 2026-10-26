@@ -37,6 +37,10 @@ room, and you do not need odometry, motion capture or a base-velocity estimator.
 the critics see the robot's offset from the reference, and they are used only in
 training.
 
+If you do have the robot's pose (motion capture, or a state estimator), the anchor mode
+(`--goal-anchor robot`, [below](#anchor-mode)) gives the motion goal relative to the
+robot itself instead, so the policy corrects its drift from the reference path.
+
 ## Layout
 
 ```
@@ -179,6 +183,34 @@ Notes:
 - `--wandb` logs to Weights & Biases, under `WANDB_ENTITY` and `WANDB_PROJECT` (default
   `morphmimic`) from the environment.
 - `uv run python -m morphmimic.scripts.train --help` lists every option.
+
+### Anchor mode
+
+By default the motion goal is position-free: the reference path is given in the
+reference's own heading frame, so the policy never sees where the robot is and cannot
+correct drift. `--goal-anchor robot` gives the reference anchor (torso) position and
+orientation relative to the robot's own anchor instead, so drift shows up in the goal
+and the policy steers back onto the reference path. The price is that the policy needs
+the robot's world position and heading at deploy time, from motion capture or a state
+estimator.
+
+```bash
+uv run python -m morphmimic.scripts.train --robots g1 x2 t2 \
+  --subset-yamls $G1 $X2 $T2 --share all --gpu-ids "[0,1,2]" \
+  --goal-anchor robot --library-dtype float16 --iterations 40000 --ckpt-every 4000 \
+  --log-dir logs --run-name unified_anchor
+```
+
+- The anchor mode trains the motion interface only: it refuses `--kp-interface`,
+  because the five-point goals are position-free.
+- A checkpoint keeps its anchor. Resuming or exporting it with the other one is refused
+  with the flag to use.
+- Export with `--goal-anchor robot` (step 1 below); the anchor goes into each
+  `<robot>.json`. Run it with `--interface motion`.
+- The sim node sends the simulator's floating-base position and yaw with every state
+  message, so the anchor mode runs in sim2sim as is. On hardware the pose comes from a
+  `PoseSource` (`deploy/hardware/pose_source.py`). The G1 node has none yet: it sends
+  no pose, and the policy node stops rather than act without one.
 
 ## Deploy
 

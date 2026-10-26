@@ -36,7 +36,7 @@ from mjlab.utils.lab_api.math import (
 )
 from torch import Tensor
 
-from morphmimic.constants import GOAL_K, R_MAX
+from morphmimic.constants import GOAL_K, R_MAX, GoalAnchor
 from morphmimic.data.motion_library import MotionLibrary
 from morphmimic.robots import get_robot
 
@@ -624,6 +624,9 @@ class MultiMotionCommandCfg(CommandTermCfg):
   an episode that runs to its clip end or the cap scores as under "actual". "actual":
   the steps the episode ran, so an early failure that tracked well scores high."""
   library_dtype: str = "float32"
+  goal_anchor: GoalAnchor = "reference"
+  """Frame of the motion goal's anchor position (`rewards_torch.goal_features`):
+  "reference" (position-free) or "robot" (goal version 1's robot-relative frame)."""
   goal_k: int = GOAL_K
   viz: MotionCommandCfg.VizCfg = field(default_factory=MotionCommandCfg.VizCfg)
 

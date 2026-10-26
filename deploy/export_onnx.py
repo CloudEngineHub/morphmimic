@@ -9,13 +9,18 @@ A multi-robot run writes one checkpoint per robot (`<run>/<robot>/ckpt_<it>.pt`)
 when the policy is shared (`--share all` or `--share policy`). The export first checks
 that the shared networks are bit-identical across those checkpoints, then writes:
 
-- `policy.onnx`: the shared policy, both goal interfaces. The per-robot parts are
-  inputs, not constants: the robot's input-normaliser statistics and its morphology
-  vector. One file serves every robot.
+- `policy.onnx`: the shared policy, with the five-point interface when the checkpoints
+  have it (a motion-only run, e.g. `--goal-anchor robot`, exports the motion goal
+  alone). The per-robot parts are inputs, not constants: the robot's morphology vector
+  and its input-normaliser statistics. A run that pooled its normalisers across the
+  robots (`--pool-norms`) has one set for all of them, baked into the model as
+  constants. One file serves every robot.
 - `<robot>.json`: those per-robot inputs, read from the robot's checkpoint, and the
   robot's constants (`robot`: joint map, default pose, action scale, kinematic tree,
   timing; baked in `deploy/sim2sim/robots/<robot>.json`), so the folder holds all the
-  robot side needs.
+  robot side needs. `goal_anchor` names the motion goal's anchor frame the policy
+  was trained with (`--goal-anchor`, which must match the checkpoints': "reference",
+  or "robot", which needs the robot's pose at deploy).
 - `MANIFEST.txt`: the shared-network check (a fingerprint per network and robot), the
   per-robot entries, the ONNX inputs and outputs, a parity check against the PyTorch
   policy, and the SHA-256 of every file.
@@ -26,7 +31,8 @@ with `torch.save` (per-robot entries left out, tensors in name order). For the p
 those are exactly the bytes written by `--export-weights`, so `sha256sum` on the
 written files shows the same digits without trusting this script.
 
-  uv run --group export python -m deploy.export_onnx <run_dir> <out_dir> [--iteration N]
+  uv run --group export python -m deploy.export_onnx <run_dir> <out_dir> [--iteration N] \
+    [--goal-anchor robot]
 """
 
 from __future__ import annotations
@@ -54,12 +60,14 @@ from morphmimic.constants import (
   KP_FEAT_DIM,
   NUM_KP,
   PROPRIO_DIM,
+  GoalAnchor,
 )
 from morphmimic.model.keypoints import mask_keypoint_goal
 from morphmimic.model.policy import Policy, PolicyCfg
 from morphmimic.robots import check_imu_body
 from morphmimic.train.imagination import act, act_kp
 from morphmimic.train.normalizers import RunningNormalizer, normalize
+from morphmimic.train.trainer import check_goal_anchor
 
 FINGERPRINT_LEN = 8
 OPSET = 18
@@ -101,7 +109,8 @@ SHARED_BY = {
   "policy": ("policy", "critic", "critic_kp", "target_critic", "target_critic_kp"),
   "wm": ("wm",),
 }
-# Per-robot inputs of the ONNX model: json key -> (checkpoint entry, statistic, width).
+# Normaliser inputs of the ONNX model: json key -> (checkpoint entry, statistic, width);
+# per-robot inputs unless the run pooled them (`pool_norms`), then constants.
 ROBOT_INPUTS = {
   "obs_mean": ("obs_norm", "mean", PROPRIO_DIM),
   "obs_var": ("obs_norm", "var", PROPRIO_DIM),
@@ -138,8 +147,9 @@ class Report:
   checks: list[NetworkCheck]
   files: dict[str, str]
   """File name -> SHA-256."""
-  parity: dict[str, tuple[float, float]]
-  """Robot -> max |ONNX - PyTorch| of the motion and keypoint actions."""
+  parity: dict[str, tuple[float, ...]]
+  """Robot -> max |ONNX - PyTorch| of the motion and (with that interface) keypoint
+  actions."""
 
   @property
   def policy_fingerprint(self) -> str:
@@ -234,40 +244,42 @@ def check_shared(ckpts: dict[str, dict]) -> list[NetworkCheck]:
 
 
 class DeployPolicy(nn.Module):
-  """The shared policy with every per-robot part as an input; both interfaces.
+  """The shared policy with every per-robot part as an input.
 
   Same computation as `imagination.act` / `act_kp`: inputs normalised with the given
   statistics, the five-point goal masked (`mask_keypoint_goal`), the decoder fed the
-  given morphology vector."""
+  given morphology vector. The inputs are `names` in order; a normaliser statistic
+  not among them is a constant of `baked` (pooled normalisers). Returns the motion
+  action, and the five-point one when `goal_keypoint` is an input."""
 
-  def __init__(self, policy: Policy, eps: float) -> None:
+  def __init__(self, policy: Policy, eps: float, names: list[str],
+               baked: dict[str, np.ndarray]) -> None:
     super().__init__()
     self.policy = policy
     self.eps = eps
+    self.names = names
+    for key, value in baked.items():
+      self.register_buffer(key, torch.from_numpy(value))
 
-  def forward(
-    self,
-    obs_history: Tensor,
-    goal_motion: Tensor,
-    goal_keypoint: Tensor,
-    kp_point_mask: Tensor,
-    kp_frame_mask: Tensor,
-    obs_mean: Tensor,
-    obs_var: Tensor,
-    goal_mean: Tensor,
-    goal_var: Tensor,
-    kp_mean: Tensor,
-    kp_var: Tensor,
-    morph: Tensor | None = None,
-  ) -> tuple[Tensor, Tensor]:
-    b = obs_history.shape[0]
-    obs = normalize(obs_history.reshape(b, -1, PROPRIO_DIM), obs_mean, obs_var, self.eps)
-    obs = obs.reshape(b, -1)
-    goal = normalize(goal_motion, goal_mean, goal_var, self.eps)
+  def forward(self, *inputs: Tensor) -> Tensor | tuple[Tensor, Tensor]:
+    x = dict(zip(self.names, inputs))
+
+    def stat(key: str) -> Tensor:
+      return x[key] if key in x else getattr(self, key)
+
+    morph = x.get("morph")
+    b = x["obs_history"].shape[0]
+    obs = normalize(x["obs_history"].reshape(b, -1, PROPRIO_DIM), stat("obs_mean"),
+                    stat("obs_var"), self.eps).reshape(b, -1)
+    goal = normalize(x["goal_motion"], stat("goal_mean"), stat("goal_var"), self.eps)
+    motion = self.policy(obs, goal, morph)
+    if "goal_keypoint" not in x:
+      return motion
     kp = mask_keypoint_goal(
-      normalize(goal_keypoint, kp_mean, kp_var, self.eps), kp_point_mask, kp_frame_mask
+      normalize(x["goal_keypoint"], stat("kp_mean"), stat("kp_var"), self.eps),
+      x["kp_point_mask"], x["kp_frame_mask"],
     )
-    return self.policy(obs, goal, morph), self.policy.forward_kp(obs, kp, morph)
+    return motion, self.policy.forward_kp(obs, kp, morph)
 
 
 def _build_policy(ckpt: dict) -> Policy:
@@ -281,61 +293,87 @@ def _build_policy(ckpt: dict) -> Policy:
     hist_len=int(cfg["hist_len"]),
     morph_dim=0 if morph is None else int(morph["actor"].numel()),
     film=False if morph is None else bool(morph["film"]),
-    keypoint=True,
+    keypoint=_has_keypoint(ckpt),
   ))
   policy.load_state_dict(ckpt["policy"])
   return policy.eval()
 
 
+def _has_keypoint(ckpt: dict) -> bool:
+  """The checkpoint has the five-point interface (`--kp-interface`)."""
+  return "kp_norm" in ckpt
+
+
+def _pooled(ckpt: dict) -> bool:
+  """A multi-robot run that pooled the policy's normalisers (`--pool-norms`)."""
+  return ckpt["cfg"].get("robots") is not None and bool(ckpt["cfg"].get("pool_norms"))
+
+
+def _norm_stats(ckpt: dict) -> dict[str, np.ndarray]:
+  """The checkpoint's normaliser statistics, by `ROBOT_INPUTS` key (the five-point ones
+  only with that interface)."""
+  return {key: ckpt[entry][stat].numpy().astype(np.float32)
+          for key, (entry, stat, _) in ROBOT_INPUTS.items() if entry in ckpt}
+
+
 def _robot_inputs(ckpt: dict) -> dict[str, np.ndarray]:
-  out = {key: ckpt[entry][stat].numpy().astype(np.float32)
-         for key, (entry, stat, _) in ROBOT_INPUTS.items()}
+  """The robot's per-robot ONNX inputs: its normaliser statistics (none when pooled,
+  they are constants then) and morphology vector."""
+  out = {} if _pooled(ckpt) else _norm_stats(ckpt)
   morph = ckpt["policy"].get("decoder.morph_actor")
   if morph is not None and morph.numel():  # a run without the morphology input has none
     out["morph"] = morph.numpy().astype(np.float32)
   return out
 
 
-def _parity_batch(hist_len: int) -> dict[str, np.ndarray]:
+def _parity_batch(hist_len: int, keypoint: bool) -> dict[str, np.ndarray]:
   rng = np.random.default_rng(0)
   b = PARITY_BATCH
-  return {
+  batch = {
     "obs_history": rng.normal(size=(b, hist_len * PROPRIO_DIM)).astype(np.float32),
     "goal_motion": rng.normal(size=(b, GOAL_DIM)).astype(np.float32),
     "goal_keypoint": rng.normal(size=(b, KP_FEAT_DIM)).astype(np.float32),
     "kp_point_mask": rng.random((b, NUM_KP)) < 0.7,
     "kp_frame_mask": np.arange(GOAL_K)[None] < rng.integers(1, GOAL_K + 1, (b, 1)),
   }
+  if not keypoint:
+    batch = {k: batch[k] for k in ("obs_history", "goal_motion")}
+  return batch
 
 
 def _pytorch_actions(ckpt: dict, batch: dict[str, np.ndarray]) -> tuple[np.ndarray, ...]:
-  """One robot's actions through the training input path (its own checkpoint)."""
+  """One robot's actions through the training input path (its own checkpoint): the
+  motion action, and the five-point one with that interface."""
   policy = _build_policy(ckpt)
   norms = {}
   for entry, dim in (("obs_norm", PROPRIO_DIM), ("goal_norm", GOAL_DIM),
                      ("kp_norm", KP_FEAT_DIM)):
-    norms[entry] = RunningNormalizer(dim).eval()
-    norms[entry].load_state_dict(ckpt[entry])
+    if entry in ckpt:
+      norms[entry] = RunningNormalizer(dim).eval()
+      norms[entry].load_state_dict(ckpt[entry])
   t = {k: torch.from_numpy(v) for k, v in batch.items()}
   with torch.no_grad():
-    motion = act(policy, norms["obs_norm"], norms["goal_norm"], t["obs_history"],
-                 t["goal_motion"])
-    keypoint = act_kp(policy, norms["obs_norm"], norms["kp_norm"], t["obs_history"],
-                      t["goal_keypoint"], t["kp_point_mask"], t["kp_frame_mask"])
-  return motion.numpy(), keypoint.numpy()
+    actions = [act(policy, norms["obs_norm"], norms["goal_norm"], t["obs_history"],
+                   t["goal_motion"])]
+    if "kp_norm" in norms:
+      actions.append(act_kp(policy, norms["obs_norm"], norms["kp_norm"], t["obs_history"],
+                            t["goal_keypoint"], t["kp_point_mask"], t["kp_frame_mask"]))
+  return tuple(a.numpy() for a in actions)
 
 
 def _export_onnx(policy: Policy, eps: float, inputs: dict[str, np.ndarray],
-                 batch: dict[str, np.ndarray], path: Path) -> None:
-  model = DeployPolicy(policy, eps).eval()
+                 baked: dict[str, np.ndarray], batch: dict[str, np.ndarray],
+                 path: Path) -> None:
   names = list(batch) + list(inputs)
+  model = DeployPolicy(policy, eps, names, baked).eval()
   args = tuple(torch.from_numpy(batch[k][:2]) for k in batch) + tuple(
     torch.from_numpy(inputs[k]) for k in inputs
   )
   batch_dim = torch.export.Dim("batch")
-  dynamic = {k: ({0: batch_dim} if k in batch else None) for k in names}
+  dynamic = {"inputs": tuple({0: batch_dim} if k in batch else None for k in names)}
+  outputs = ["action_motion", "action_keypoint"] if "goal_keypoint" in batch else ["action_motion"]
   program = torch.onnx.export(
-    model, args, input_names=names, output_names=["action_motion", "action_keypoint"],
+    model, args, input_names=names, output_names=outputs,
     dynamic_shapes=dynamic, opset_version=OPSET, dynamo=True, external_data=False,
   )
   program.save(str(path), external_data=False)
@@ -408,18 +446,30 @@ def _manifest(report: Report, ckpts: dict[str, dict], hist_len: int) -> str:
       f"  {NETWORK_LABEL[c.network]:28s}{shared}{c.values:>12,d}  "
       + "".join(f"{c.fingerprints[r]:10s}" for r in robots) + result
     )
+  first = ckpts[robots[0]]
+  keypoint, pooled = _has_keypoint(first), _pooled(first)
   lines += ["", "Per-robot entries (differ by design; in <robot>.json):", ""]
-  has_morph = "morph" in ckpts[robots[0]]
+  has_morph = "morph" in first
   if has_morph:
-    width = ckpts[robots[0]]["morph"]["actor"].numel()
+    width = first["morph"]["actor"].numel()
     lines.append(f"  {'decoder morphology vector':28s}{width:>5d}  json `morph`:"
                  " which body the decoder drives")
-  for entry, what in (("obs_norm", "proprioception"), ("goal_norm", "motion goal"),
-                      ("kp_norm", "five-point goal")):
+  norms = [("obs_norm", "proprioception"), ("goal_norm", "motion goal")]
+  if keypoint:
+    norms.append(("kp_norm", "five-point goal"))
+  norm_lines = []
+  for entry, what in norms:
     keys = [k for k, (e, _, _) in ROBOT_INPUTS.items() if e == entry]
     width = ROBOT_INPUTS[keys[0]][2]
-    lines.append(f"  {entry + ' mean, var':28s}{width:>5d}  json `{keys[0]}`, `{keys[1]}`:"
-                 f" {what} normaliser, fit on the robot's own data")
+    where = "policy.onnx constants" if pooled else f"json `{keys[0]}`, `{keys[1]}`"
+    norm_lines.append(f"  {entry + ' mean, var':28s}{width:>5d}  {where}: {what} normaliser")
+  if pooled:
+    lines += ["", "Normalisers pooled over every robot's data (--pool-norms), one set baked into",
+              "policy.onnx:", "", *norm_lines]
+  else:
+    lines += [f"{line}, fit on the robot's own data" for line in norm_lines]
+  norm_keys = [k for k, (e, _, _) in ROBOT_INPUTS.items() if e in dict(norms)]
+  robot_inputs = ([] if pooled else norm_keys) + (["morph"] if has_morph else [])
   lines += [
     "  (in the training checkpoints also: the world model's state normaliser, height",
     "  statistics, residual scale, joint limits and default pose; the critics' copies",
@@ -429,16 +479,27 @@ def _manifest(report: Report, ckpts: dict[str, dict], hist_len: int) -> str:
     "",
     f"  obs_history     [B, {hist_len * PROPRIO_DIM}]  float  {hist_len} proprioception frames, oldest first,"
     f" {PROPRIO_DIM} each",
-    f"  goal_motion     [B, {GOAL_DIM}]  float  motion goal (zeros if unused)",
-    f"  goal_keypoint   [B, {KP_FEAT_DIM}]  float  five-point goal features (zeros if unused)",
-    f"  kp_point_mask   [B, {NUM_KP}]    bool   visible points: pelvis, l ankle, r ankle,"
-    " l wrist, r wrist",
-    f"  kp_frame_mask   [B, {GOAL_K}]   bool   visible preview frames (a prefix)",
-    "  obs_mean, obs_var, goal_mean, goal_var, kp_mean, kp_var"
-    + (", morph" if has_morph else " (no morphology input in this run)"),
-    "                  [width]  float  the robot's values, from <robot>.json",
-    f"  -> action_motion   [B, {ACTION_DIM}]  through the motion goal",
-    f"  -> action_keypoint [B, {ACTION_DIM}]  through the five-point goal",
+    f"  goal_motion     [B, {GOAL_DIM}]  float  motion goal"
+    + (" (zeros if unused)" if keypoint else ""),
+  ]
+  if keypoint:
+    lines += [
+      f"  goal_keypoint   [B, {KP_FEAT_DIM}]  float  five-point goal features (zeros if unused)",
+      f"  kp_point_mask   [B, {NUM_KP}]    bool   visible points: pelvis, l ankle, r ankle,"
+      " l wrist, r wrist",
+      f"  kp_frame_mask   [B, {GOAL_K}]   bool   visible preview frames (a prefix)",
+    ]
+  if robot_inputs:
+    lines += [f"  {', '.join(robot_inputs)}",
+              "                  [width]  float  the robot's values, from <robot>.json"]
+  if not has_morph:
+    lines.append("  (no morphology input in this run)")
+  lines.append(f"  -> action_motion   [B, {ACTION_DIM}]  through the motion goal")
+  if keypoint:
+    lines.append(f"  -> action_keypoint [B, {ACTION_DIM}]  through the five-point goal")
+  else:
+    lines.append("  (no five-point interface in this run: motion goal only)")
+  lines += [
     f"  Actions and joint observations use the canonical {len(JOINT_NAMES)}-joint order"
     " (the G1's;",
     "  `canonical_joint_order` in the json); other robots map it with their translator.",
@@ -447,8 +508,9 @@ def _manifest(report: Report, ckpts: dict[str, dict], hist_len: int) -> str:
     " random masks):",
     "",
   ]
-  for r, (dm, dk) in report.parity.items():
-    lines.append(f"  {r:6s} max |ONNX - PyTorch|  motion {dm:.1e}  keypoint {dk:.1e}")
+  for r, diffs in report.parity.items():
+    kp = f"  keypoint {diffs[1]:.1e}" if len(diffs) > 1 else ""
+    lines.append(f"  {r:6s} max |ONNX - PyTorch|  motion {diffs[0]:.1e}{kp}")
   lines += ["", "Files (check with: sha256sum -c SHA256SUMS)", ""]
   lines += [f"  {digest}  {name}" for name, digest in report.files.items()]
   lines += ["", "Source checkpoints", ""]
@@ -456,13 +518,19 @@ def _manifest(report: Report, ckpts: dict[str, dict], hist_len: int) -> str:
   return "\n".join(lines) + "\n"
 
 
-def export(paths: list[Path], out_dir: Path, weights_dir: Path | None = None) -> Report:
+def export(paths: list[Path], out_dir: Path, weights_dir: Path | None = None,
+           goal_anchor: GoalAnchor = "reference") -> Report:
   """Checks the shared networks of `paths` (one checkpoint per robot), then writes
   `policy.onnx`, `<robot>.json` and `MANIFEST.txt` to `out_dir`. One checkpoint exports
   that robot's policy. Raises ValueError, before writing anything, when several
-  checkpoints do not share their policy or a shared network differs. With `weights_dir`, also writes each robot's policy weights (per-robot
-  entries left out) to `<robot>.policy.pt`: byte-identical files."""
+  checkpoints do not share their policy or a shared network differs, or when a
+  checkpoint was trained with another goal anchor than `goal_anchor`
+  (`check_goal_anchor`), which the json records. With `weights_dir`, also writes each
+  robot's policy weights (per-robot entries left out) to `<robot>.policy.pt`:
+  byte-identical files."""
   ckpts = _load(paths)
+  for ckpt in ckpts.values():
+    check_goal_anchor(ckpt["cfg"], goal_anchor, ckpt["_path"])
   robots = list(ckpts)
   first = ckpts[robots[0]]
   share = first["cfg"]["share"]
@@ -478,23 +546,32 @@ def export(paths: list[Path], out_dir: Path, weights_dir: Path | None = None) ->
     detail = "; ".join(f"{c.network}: {', '.join(c.differing[:5])}" for c in bad)
     raise ValueError(f"shared networks differ across the checkpoints: {detail}")
 
+  keypoint = _has_keypoint(first)
+  pooled = _pooled(first)
+  if any(_has_keypoint(c) != keypoint or _pooled(c) != pooled for c in ckpts.values()):
+    raise ValueError("checkpoints differ in --kp-interface or --pool-norms")
+  baked = _norm_stats(first) if pooled else {}
+  for r, c in ckpts.items():
+    if pooled and any(not np.array_equal(v, baked[k]) for k, v in _norm_stats(c).items()):
+      raise ValueError(f"{r}: pooled normalisers differ from {robots[0]}'s")
+
   out_dir = Path(out_dir)
   out_dir.mkdir(parents=True, exist_ok=True)
   hist_len = int(first["cfg"]["hist_len"])
   eps = RunningNormalizer(1).eps
-  batch = _parity_batch(hist_len)
+  batch = _parity_batch(hist_len, keypoint)
   inputs = {r: _robot_inputs(c) for r, c in ckpts.items()}
-  _export_onnx(_build_policy(first), eps, inputs[robots[0]], batch, out_dir / "policy.onnx")
+  _export_onnx(_build_policy(first), eps, inputs[robots[0]], baked, batch,
+               out_dir / "policy.onnx")
 
   import onnxruntime as ort
 
   session = ort.InferenceSession(str(out_dir / "policy.onnx"))
   parity = {}
   for r, ckpt in ckpts.items():
-    motion, keypoint = session.run(None, {**batch, **inputs[r]})
-    ref_motion, ref_keypoint = _pytorch_actions(ckpt, batch)
-    parity[r] = (float(np.abs(motion - ref_motion).max()),
-                 float(np.abs(keypoint - ref_keypoint).max()))
+    got = session.run(None, {**batch, **inputs[r]})
+    want = _pytorch_actions(ckpt, batch)
+    parity[r] = tuple(float(np.abs(a - b).max()) for a, b in zip(got, want, strict=True))
   if max(max(p) for p in parity.values()) > PARITY_ATOL:
     raise ValueError(f"ONNX does not match PyTorch: {parity}")
 
@@ -509,6 +586,8 @@ def export(paths: list[Path], out_dir: Path, weights_dir: Path | None = None) ->
       "iteration": int(first["iteration"]),
       "goal_version": GOAL_VERSION,
       "kp_goal_version": int(ckpt.get("kp_goal_version", 1)),
+      "goal_anchor": goal_anchor,
+      "pool_norms": pooled,
       "source_checkpoint": ckpt["_path"],
       "canonical_joint_order": list(JOINT_NAMES),
       "inputs": {k: v.tolist() for k, v in inputs[r].items()},
@@ -547,8 +626,11 @@ def main() -> None:
                       help="checkpoint iteration (default: the latest every robot has)")
   parser.add_argument("--export-weights", type=Path, default=None,
                       help="also write <robot>.policy.pt weight files here")
+  parser.add_argument("--goal-anchor", choices=["reference", "robot"], default="reference",
+                      help="the goal anchor the checkpoints were trained with")
   args = parser.parse_args()
-  export(resolve_paths(args.paths, args.iteration), args.out_dir, args.export_weights)
+  export(resolve_paths(args.paths, args.iteration), args.out_dir, args.export_weights,
+         args.goal_anchor)
   print((args.out_dir / "MANIFEST.txt").read_text(), end="")
 
 

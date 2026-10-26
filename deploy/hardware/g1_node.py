@@ -6,7 +6,9 @@ by `deploy/install_unitree_sdk.sh`): it reads the IMU (the pelvis IMU, the G1's
 `Robot.imu_body`: quaternion wxyz and body-frame gyro), the 29 joint encoders and the
 wireless remote, and writes 29 PD targets at 50 Hz. The policy node (`policy_node.py`,
 clip or teleop) does everything else, unchanged from the sim: per step this node sends
-the state message and applies the action of the same `step_id`.
+the state message and applies the action of the same `step_id`. It has no pose source
+yet (`pose_source.py`): its state messages carry a NaN pose, and it refuses an export
+of the robot goal anchor (`--goal-anchor robot`).
 
 The gains are the ones the policy was trained with, from the deployment folder's
 `<robot>.json` (the robot constants' `pd`: mjlab's G1 actuators). Other G1 projects use
@@ -53,6 +55,7 @@ from pathlib import Path
 import numpy as np
 import zmq
 
+from deploy.hardware.pose_source import NO_POSE_SOURCE
 from deploy.sim2sim import protocol
 from deploy.sim2sim.obs import Robot
 
@@ -221,6 +224,7 @@ class G1Node:
       dq = np.asarray(state.motor.dq[: self.n], float)
       sent = step
       try:  # At most 2 ms on a missing policy node (then: a late action).
+        # No pose source yet: the pose goes as NaN (the SE(3) LIO plugs in here).
         self.state_out.send(protocol.pack_state(step, quat, gyro, q, dq, cues))
         fresh = self._await_action(step)
       except zmq.Again:
@@ -299,10 +303,14 @@ def stand_pose(robot: Robot, which: str) -> np.ndarray:
 
 def make_node(deploy_dir: Path, net: str, stand: str = "neutral", kp_scale: float = 1.0,
               **kwargs) -> G1Node:
-  """The node on the real G1 (needs `unitree_interface`)."""
+  """The node on the real G1 (needs `unitree_interface`). Raises RuntimeError for an
+  export of the robot goal anchor, which needs a pose source the G1 does not have yet."""
+  full = json.loads((Path(deploy_dir) / "g1.json").read_text())
+  if full.get("goal_anchor", "reference") == "robot":
+    raise RuntimeError(NO_POSE_SOURCE)
   import unitree_interface
 
-  doc = json.loads((Path(deploy_dir) / "g1.json").read_text())["robot"]
+  doc = full["robot"]
   robot = Robot.from_dict(doc)
   gains = Gains.from_deploy(doc, kp_scale)
   print(f"[g1_node] gains from {deploy_dir}/g1.json (x{kp_scale} kp): kp "

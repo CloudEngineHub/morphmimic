@@ -59,7 +59,14 @@ from typing import TYPE_CHECKING, NamedTuple
 import torch
 from torch import Tensor, nn
 
-from morphmimic.constants import GOAL_K, KP_JITTER, NUM_JOINTS, OBS_NOISE, PROPRIO_DIM
+from morphmimic.constants import (
+  GOAL_K,
+  KP_JITTER,
+  NUM_JOINTS,
+  OBS_NOISE,
+  PROPRIO_DIM,
+  GoalAnchor,
+)
 from morphmimic.model.keypoints import (
   keypoint_features,
   keypoint_jitter,
@@ -103,6 +110,8 @@ class ImaginationCfg:
   target_max: float | None = None
   """Upper clamp on each critic target R_t, applied inside the recursion so earlier
   targets bootstrap from the clamped ones (None: unclamped, the paper's targets)."""
+  goal_anchor: GoalAnchor = "reference"
+  """Frame of the motion goal's anchor position (`goal_features`), as the env's."""
 
 
 class ImaginedRollout(NamedTuple):
@@ -247,6 +256,13 @@ class ImaginedStep(NamedTuple):
   latent_err: Tensor  # ||z_kp,t - sg(z_motion,t)||^2 [B]; zeros for `imagine_step`
 
 
+def anchor_kwargs(anchor: GoalAnchor) -> dict[str, GoalAnchor]:
+  """`anchor=` for `imagine_step`, `imagine_step_kp` and `finish_rollout`: empty
+  for the default "reference", so the default calls are exactly the positional ones
+  of before the switch."""
+  return {} if anchor == "reference" else {"anchor": anchor}
+
+
 def imagine_step(
   wm: WorldModel,
   policy: Policy,
@@ -259,12 +275,15 @@ def imagine_step(
   goal_ref: Tensor,
   ctx: Tensor,
   noise: Tensor,
+  *,
+  anchor: GoalAnchor = "reference",
 ) -> ImaginedStep:
   """One imagined transition (module docstring) from ŝ_t with the noisy obs history
   [B, hist_len, 93], a_{t-1}, ĉ_t, `goal_ref` [B, K, 240] = ref_t .. ref_{t+K-1}, the
-  context xi and the sensor noise eta [B, 93] of o_{t+1}. The unit the trainer
-  compiles: one graph, replayed H times per rollout."""
-  goal = goal_norm(goal_features(state, goal_ref))
+  context xi and the sensor noise eta [B, 93] of o_{t+1}; the goal in the `anchor`
+  frame (`goal_features`). The unit the trainer compiles: one graph, replayed H times
+  per rollout."""
+  goal = goal_norm(goal_features(state, goal_ref, anchor))
   # Same input path as `act`.
   action = policy(normalize_history(obs_norm, obs_hist.flatten(1)), goal)
   return _transition(
@@ -322,15 +341,18 @@ def imagine_step_kp(
   point_mask: Tensor,
   frame_mask: Tensor,
   jitter: Tensor,
+  *,
+  anchor: GoalAnchor = "reference",
 ) -> ImaginedStep:
   """`imagine_step` with the action from the keypoint encoder: the arguments after
   `noise` are the bool masks `point_mask` [B, 5] and `frame_mask` [B, K] and the target
   jitter `jitter` [B, K, 5, 6] of the K frames of `goal_ref` (`kp_jitter_window[:, t :
-  t + K]`). The goal stored for the critic is the full motion goal; `latent_err` [B] is
-  the squared distance of z_kp to the motion encoder's latent of that goal, a
-  stop-gradient target. Reward, termination and the next observation are as in
-  `imagine_step`. The unit the trainer compiles for the keypoint step."""
-  goal = goal_norm(goal_features(state, goal_ref))
+  t + K]`). The goal stored for the critic is the full motion goal in the `anchor`
+  frame (`goal_features`); `latent_err` [B] is the squared distance of z_kp to the
+  motion encoder's latent of that goal, a stop-gradient target. Reward, termination
+  and the next observation are as in `imagine_step`. The unit the trainer compiles for
+  the keypoint step."""
+  goal = goal_norm(goal_features(state, goal_ref, anchor))
   z_motion = policy.encode(goal).detach()
   kp_goal = mask_keypoint_goal(
     kp_norm(keypoint_features(state, goal_ref, jitter)), point_mask, frame_mask
@@ -362,12 +384,15 @@ def finish_rollout(
   ctx: Tensor,
   trunc_mask: Tensor,
   bootstrap: Tensor | None = None,
+  *,
+  anchor: GoalAnchor = "reference",
 ) -> ImaginedRollout:
   """`ImaginedRollout` of the H `steps` from ŝ_0 = `state0`: the goal g_H (from
   `last_goal_ref` = ref_H .. ref_{H+K-1}), the local features of ŝ_0 .. ŝ_H and the
-  critic values V_0 .. V_H. The second unit the trainer compiles."""
+  critic values V_0 .. V_H; g_H in the `anchor` frame (`goal_features`). The second
+  unit the trainer compiles."""
   states = torch.stack([state0] + [s.next_state for s in steps], dim=1)
-  goal_h = goal_norm(goal_features(steps[-1].next_state, last_goal_ref))
+  goal_h = goal_norm(goal_features(steps[-1].next_state, last_goal_ref, anchor))
   goals = torch.stack([s.goal for s in steps] + [goal_h], dim=1)
   priv_h = critic_anchor_pos(steps[-1].next_state, last_goal_ref)
   priv = torch.stack([s.priv for s in steps] + [priv_h], dim=1)
@@ -428,8 +453,9 @@ def imagine_rollout(
   """The rollout of `imagine` with the given sensor noise [B, hist_len + H, 93]
   (`imagination_noise`); the caller freezes `wm` and `critic` (`frozen`).
 
-  `step` and `finish` are `imagine_step` and `finish_rollout` with these networks
-  (default) or compiled versions of them (`imagine_step_kp` for the keypoint rollout).
+  `step` and `finish` are `imagine_step` and `finish_rollout` with these networks and
+  `cfg.goal_anchor` (default) or compiled versions of them (`imagine_step_kp` for the
+  keypoint rollout).
   Every step gets inputs of the same shapes and strides, so a compiled step is not
   recompiled per step (it is compiled twice: step 0's inputs need no grad).
 
@@ -438,10 +464,11 @@ def imagine_rollout(
   horizon, k = cfg.horizon, GOAL_K
   b, hist_len = start.obs_hist.shape[:2]
   device = start.state.device
+  kw = anchor_kwargs(cfg.goal_anchor)
   if step is None:
-    step = functools.partial(imagine_step, wm, policy, obs_norm, goal_norm)
+    step = functools.partial(imagine_step, wm, policy, obs_norm, goal_norm, **kw)
   if finish is None:
-    finish = functools.partial(finish_rollout, wm, critic, goal_norm)
+    finish = functools.partial(finish_rollout, wm, critic, goal_norm, **kw)
   window = reference_window(library, start.frame, horizon + k)
   num_rewarded = (library.remaining(start.frame) + 1).clamp(max=horizon)
   trunc_mask = torch.arange(horizon, device=device) < num_rewarded.unsqueeze(-1)

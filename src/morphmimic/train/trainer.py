@@ -27,8 +27,9 @@ ranks) and checkpoints. Without a process group nothing of this runs.
 
 Multi-robot (`TrainCfg.robots`; spec 2026-10-22-shared-world-model): rank r simulates
 robot `robots[r]` on `subset_yamls[r]` with its own env, library, replay, reset
-sampler and running normalisers (never synced), and every network sees the robot's
-morphology vector (buffers of the modules, set once per rank). Only the shared modules
+sampler and running normalisers (synced only with `pool_norms`: then the policy's
+observation, goal and keypoint normalisers pool every robot's samples), and every
+network sees the robot's morphology vector (buffers of the modules, set once per rank). Only the shared modules
 (the world model always, the policy and critic with `share="all"`) start from rank
 0's parameters (parameters only: each robot keeps its own world-model normaliser,
 joint limits, default pose, residual scale, height statistics and morphology vector)
@@ -71,6 +72,7 @@ from torch import Tensor, nn
 
 from morphmimic.constants import (
   CRITIC_PRIV_DIM,
+  GOAL_ANCHORS,
   GOAL_DIM,
   GOAL_K,
   GOAL_VERSION,
@@ -81,6 +83,7 @@ from morphmimic.constants import (
   NUM_KP,
   PROPRIO_DIM,
   R_MAX,
+  GoalAnchor,
 )
 from morphmimic.data.motion_library import MotionLibrary
 from morphmimic.env.commands import MultiMotionCommand, MultiMotionCommandCfg
@@ -108,6 +111,7 @@ from morphmimic.train.imagination import (
   ImaginedStep,
   act,
   act_kp,
+  anchor_kwargs,
   clip_grads_,
   critic_loss,
   finish_rollout,
@@ -174,6 +178,10 @@ ADDED_CFG_DEFAULTS: dict[str, object] = {
   "target_critic_alpha": None,
   "critic_target_clip": False,
   "actuator_delay": False,
+  # Every multi-robot run before the switch fit each robot's own normalisers.
+  "pool_norms": False,
+  # Every run before the switch had the position-free goal.
+  "goal_anchor": "reference",
 }
 # Fields a resume takes from the checkpoint's cfg (a cfg without the field: its
 # `ADDED_CFG_DEFAULTS` value) unless the run names them (`Trainer.load(explicit=)`):
@@ -338,6 +346,13 @@ class TrainCfg:
   (goal version 2) does not carry, so without it the critic cannot see that drift.
   `--no-critic-anchor-pos` gives the critic without it (needed to resume checkpoints
   from before the input). Not in the paper."""
+  goal_anchor: GoalAnchor = "reference"
+  """Frame of the motion goal's anchor position (`rewards_torch.goal_features`):
+  "reference", the reference's own heading frame (goal version 2, position-free);
+  "robot", the current robot anchor frame (goal version 1's features), which needs the
+  robot's pose at deploy (a state estimator). The motion interface only: "robot"
+  refuses `kp_interface`. A checkpoint resumes and exports only under its own anchor
+  (`check_goal_anchor`)."""
   avoid_clip_end: bool = True
   """Start imagined rollouts only where the horizon and the goal lookahead stay inside
   the clip (`remaining(frame) >= horizon + GOAL_K`), so no rollout reaches a clip end.
@@ -417,6 +432,11 @@ class TrainCfg:
   mode, 0 otherwise (saved resolved)."""
   latent_align_batch: int = 1024
   """Reference frames (common clips) per policy update of the latent alignment."""
+  pool_norms: bool = True
+  """Multi-robot runs: pool the policy's observation, goal and keypoint normalisers
+  across the robots, so the shared policy has one input scaling for every robot (the
+  world model's state normaliser stays each robot's own). Single-robot runs are
+  unaffected. `--no-pool-norms` fits each robot's own."""
   kp_interface: bool = False
   """Also train the five-point keypoint interface (App. B): a
   keypoint encoder feeding the shared decoder, its own critic `critic_kp`, one
@@ -667,12 +687,22 @@ class LearnedSteps:
     return self.wm.fit_loss(batch, self.library)
 
   def _imagine_step(self, *args: Tensor) -> ImaginedStep:
-    """`imagine_step` of this policy (args after the networks)."""
-    return imagine_step(self.wm, self.policy, self.obs_norm, self.goal_norm, *args)
+    """`imagine_step` of this policy (args after the networks), in the imagination
+    cfg's goal anchor."""
+    return imagine_step(
+      self.wm,
+      self.policy,
+      self.obs_norm,
+      self.goal_norm,
+      *args,
+      **anchor_kwargs(self.imag_cfg.goal_anchor),
+    )
 
   def _finish_rollout(self, *args: Any) -> ImaginedRollout:
     """`finish_rollout` of this critic (args after the networks)."""
-    return finish_rollout(self.wm, self.critic, self.goal_norm, *args)
+    return finish_rollout(
+      self.wm, self.critic, self.goal_norm, *args, **anchor_kwargs(self.imag_cfg.goal_anchor)
+    )
 
   def policy_loss(
     self, start: StartBatch, noise: Tensor
@@ -706,12 +736,24 @@ class LearnedSteps:
     """`imagine_step_kp` of this policy and keypoint normaliser (args after the
     networks)."""
     return imagine_step_kp(
-      self.wm, self.policy, self.obs_norm, self.goal_norm, self.kp_norm, *args
+      self.wm,
+      self.policy,
+      self.obs_norm,
+      self.goal_norm,
+      self.kp_norm,
+      *args,
+      **anchor_kwargs(self.imag_cfg.goal_anchor),
     )
 
   def _finish_rollout_kp(self, *args: Any) -> ImaginedRollout:
     """`finish_rollout` of the keypoint critic (args after the networks)."""
-    return finish_rollout(self.wm, self.critic_kp, self.goal_norm, *args)
+    return finish_rollout(
+      self.wm,
+      self.critic_kp,
+      self.goal_norm,
+      *args,
+      **anchor_kwargs(self.imag_cfg.goal_anchor),
+    )
 
   def policy_loss_kp(
     self,
@@ -774,6 +816,18 @@ def _flag_arg(key: str, value: object) -> str:
   if isinstance(value, bool):
     return f"--{name}" if value else f"--no-{name}"
   return f"--{name} {value}"
+
+
+def check_goal_anchor(cfg: dict[str, Any], anchor: str, path: str | Path) -> None:
+  """Raises ValueError when the checkpoint cfg `cfg` (a cfg without `goal_anchor`:
+  "reference") was trained with another goal anchor than `anchor`: the goal features
+  of the two anchors are not interchangeable."""
+  saved = cfg.get("goal_anchor", ADDED_CFG_DEFAULTS["goal_anchor"])
+  if saved != anchor:
+    raise ValueError(
+      f"checkpoint {path} was trained with --goal-anchor {saved}; pass --goal-anchor"
+      f" {saved}"
+    )
 
 
 def _field_defaults(cfg: Any) -> dict[str, Any]:
@@ -948,6 +1002,7 @@ class Trainer:
       subset_yaml=cfg.subset_yaml,
       num_envs=cfg.num_envs,
       actuator_delay=cfg.actuator_delay,
+      goal_anchor=cfg.goal_anchor,
     )
     env_cfg.seed = cfg.seed + self.rank
     command_cfg = env_cfg.commands[COMMAND_NAME]
@@ -1005,8 +1060,9 @@ class Trainer:
       priv_dim=CRITIC_PRIV_DIM if cfg.critic_anchor_pos else 0,
     )
     self.critic = Critic(critic_cfg).to(device)
-    # Multi-robot mode: each robot's running normalisers are its own (no pooling).
-    sync = distributed and not self.multi
+    # Multi-robot mode: the policy's normalisers pool every robot's samples with
+    # `pool_norms`, else each robot's are its own.
+    sync = distributed and (not self.multi or cfg.pool_norms)
     self.obs_norm = RunningNormalizer(PROPRIO_DIM, sync=sync).to(device)
     self.goal_norm = RunningNormalizer(GOAL_DIM, sync=sync).to(device)
     self.critic_kp: Critic | None = None
@@ -1039,6 +1095,9 @@ class Trainer:
       # The shared modules start from rank 0's parameters; every buffer (the robot's
       # normaliser, limits, default pose, height statistics, morphology) stays its own.
       broadcast_params_(*self._shared)
+      if cfg.pool_norms:
+        # Pooled normalisers start from rank 0's, so the ranks' copies agree.
+        broadcast_(self.obs_norm, self.goal_norm, *self._kp_norm())
     elif distributed:
       # All ranks start from rank 0's networks and (state, input) normalisers.
       broadcast_(
@@ -1112,6 +1171,7 @@ class Trainer:
     self.imag_cfg = ImaginationCfg(
       horizon=cfg.horizon, gamma=cfg.gamma, lam=cfg.lam,
       clip_end_terminal=cfg.clip_end_terminal, target_max=_target_max(cfg),
+      goal_anchor=cfg.goal_anchor,
     )
     self._noise_half = noise_half_widths(self.imag_cfg.obs_noise, torch.device(device))
     self.steps = LearnedSteps(
@@ -1179,7 +1239,16 @@ class Trainer:
   def _resolve_cfg(self, cfg: TrainCfg) -> TrainCfg:
     """`cfg` checked, with this rank's robot and subset yaml in multi-robot mode and
     `morphology`, `decoder_film`, `latent_align_weight` resolved (see `TrainCfg`).
-    Raises ValueError for an inconsistent multi-robot or morphology setting."""
+    Raises ValueError for an inconsistent multi-robot or morphology setting, or for
+    `goal_anchor="robot"` with the five-point interface (its goals are position-free)."""
+    if cfg.goal_anchor not in GOAL_ANCHORS:
+      raise ValueError(
+        f"goal_anchor must be 'reference' or 'robot', got {cfg.goal_anchor!r}"
+      )
+    if cfg.goal_anchor == "robot" and cfg.kp_interface:
+      raise ValueError(
+        "--kp-interface needs --goal-anchor reference: five-point goals are position-free"
+      )
     multi = cfg.robots is not None
     if multi:
       robots = tuple(cfg.robots)
@@ -1247,6 +1316,10 @@ class Trainer:
     mean = total / n
     std = (total_sq / n - mean.square()).clamp(min=0.0).sqrt()
     return mean.float(), std.float().clamp(min=HEIGHT_STD_FLOOR)
+
+  def _kp_norm(self) -> tuple[nn.Module, ...]:
+    """`kp_norm` with the keypoint interface; none without it."""
+    return () if self.kp_norm is None else (self.kp_norm,)
 
   def _kp_modules(self) -> tuple[nn.Module, ...]:
     """The keypoint interface's own modules besides the policy (`critic_kp`,
@@ -1358,15 +1431,17 @@ class Trainer:
     """Cross-robot latent alignment term of the policy loss (collective):
     the `latent_align_batch` reference frames of this iteration's common-clip draw
     (the same (clip, frame) pairs on every rank), their goal features with the robot
-    exactly on the reference, `goal_features(state(f), future(f, K))`, normalised and
-    encoded by this rank's motion encoder, then `latent_alignment_loss`. Returns
-    (`latent_align_weight` x loss, metrics `policy/latent_align_loss` (unweighted) and
-    `policy/latent_dist`, the mean cross-robot latent distance)."""
+    exactly on the reference, `goal_features(state(f), future(f, K), goal_anchor)`,
+    normalised and encoded by this rank's motion encoder, then `latent_alignment_loss`.
+    Returns (`latent_align_weight` x loss, metrics `policy/latent_align_loss`
+    (unweighted) and `policy/latent_dist`, the mean cross-robot latent distance)."""
     assert self._align_sampler is not None
     frames = self._align_sampler.frames(self.it, self.cfg.latent_align_batch)
     with torch.no_grad():
       goal = goal_features(
-        self.library.state(frames), self.library.future(frames, GOAL_K)
+        self.library.state(frames),
+        self.library.future(frames, GOAL_K),
+        self.cfg.goal_anchor,
       )
       goal = self.goal_norm(goal)
     loss, distance = latent_alignment_loss(self.policy.encode(goal))
@@ -1944,7 +2019,8 @@ class Trainer:
     checksum each (`param_checksums`); rank 0 prints a warning when the checksums of a
     network differ over the ranks by more than `RANK_CHECKSUM_RTOL` (relative).
     Multi-robot mode: the shared modules only, by their parameters (the buffers are
-    each robot's own). Returns whether all agree."""
+    each robot's own), and with `pool_norms` the policy's pooled normalisers by their
+    statistics. Returns whether all agree."""
     named = {
       "policy": self.policy,
       "wm": self.wm,
@@ -1960,6 +2036,16 @@ class Trainer:
     ]
     names = tuple(n for n, _ in shared)
     hi, lo = param_checksums(*(m for _, m in shared), buffers=not self.multi)
+    if self.multi and self.cfg.pool_norms:
+      norms = {
+        "obs_norm": self.obs_norm,
+        "goal_norm": self.goal_norm,
+        "kp_norm": self.kp_norm,
+      }
+      norms = {n: m for n, m in norms.items() if m is not None}
+      norm_hi, norm_lo = param_checksums(*norms.values())
+      names += tuple(norms)
+      hi, lo = torch.cat([hi, norm_hi]), torch.cat([lo, norm_lo])
     scale = torch.maximum(hi.abs(), lo.abs())
     diverged = ((hi - lo).abs() > RANK_CHECKSUM_RTOL * scale).tolist()
     if any(diverged) and self.is_main:
@@ -1982,7 +2068,8 @@ class Trainer:
     schedule, the reset sampler and the RNG states; training then continues from its
     iteration. Returns the names of the restored parts. Raises ValueError, before
     restoring anything, when the checkpoint's goal inputs are another version
-    (`GOAL_VERSION`; a checkpoint without `goal_version` is version 1), when a flag of `LEGACY_CFG_DEFAULTS` differs from this
+    (`GOAL_VERSION`; a checkpoint without `goal_version` is version 1) or was trained
+    with another `goal_anchor` (`check_goal_anchor`), when a flag of `LEGACY_CFG_DEFAULTS` differs from this
     trainer's (a cfg without the field has the legacy value), naming the flags that
     load the checkpoint, or when the checkpoint was trained for another robot or robot
     set (`_resume_guard`: `robot`, `robots`, `morphology`; in multi-robot mode also
@@ -2027,6 +2114,7 @@ class Trainer:
         " pelvis), so its keypoint encoder and normaliser do not"
         " carry over"
       )
+    check_goal_anchor(ckpt["cfg"], self.cfg.goal_anchor, path)
     current, saved = asdict(self.cfg), {**ADDED_CFG_DEFAULTS, **ckpt["cfg"]}
     # `LEGACY_CFG_DEFAULTS` flags first: a mismatch is refused before anything is
     # restored.

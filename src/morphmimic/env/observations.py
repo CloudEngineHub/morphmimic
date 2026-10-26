@@ -55,9 +55,10 @@ def wm_state(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
 
 
 def goal_future(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
-  """Goal [B, K * 67] from the command's next K reference frames."""
+  """Goal [B, K * 67] from the command's next K reference frames, in the command's
+  `goal_anchor` frame."""
   cmd = _command(env, command_name)
-  return goal_features(_robot_state(env, cmd), cmd.future_states())
+  return goal_features(_robot_state(env, cmd), cmd.future_states(), cmd.cfg.goal_anchor)
 
 
 def goal_keypoints(env: ManagerBasedRlEnv, command_name: str) -> Tensor:

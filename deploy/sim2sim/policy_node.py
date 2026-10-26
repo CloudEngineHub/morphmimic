@@ -18,6 +18,14 @@ hardware). In teleop, stand and a clip from the stand the window the policy trac
 also pushed to
 `protocol.DISPLAY_PORT`, where the sim draws it.
 
+The motion goal is in the export's goal anchor (`<robot>.json` `goal_anchor`;
+"reference" when absent, every export before the switch). Under "robot"
+(`--goal-anchor robot`, goal version 1's robot-relative goal) the goal needs the robot's
+pose: the state message's floating-base position and yaw (the sim node sends the
+simulator's; on hardware a state estimator, `deploy/hardware/pose_source.py`), and the
+node refuses to act on a message without one. Such a policy has the motion interface
+only (`--interface motion`), as has any export without the five-point inputs.
+
   uv run --group export python -m deploy.sim2sim.policy_node <deploy_dir> --robot g1 \\
     --clip <assets>/clips/g1/<clip>.npz [--interface motion|keypoint]
   uv run --group export python -m deploy.sim2sim.policy_node <deploy_dir> --robot x2 \\
@@ -35,6 +43,7 @@ from pathlib import Path
 import numpy as np
 import zmq
 
+from deploy.hardware.pose_source import NO_POSE_SOURCE
 from deploy.sim2sim import protocol
 from deploy.sim2sim.obs import (
   GOAL_K,
@@ -187,7 +196,8 @@ class StandReference:
 
 class PolicyRunner:
   """One robot's policy: measurements and a reference window in, joint targets out.
-  `reference` gives the window (`ClipReference`, `teleop.TeleopReference`)."""
+  `reference` gives the window (`ClipReference`, `teleop.TeleopReference`). The goal
+  anchor is the export's (`goal_anchor`)."""
 
   def __init__(self, deploy_dir: Path, robot: str, reference,
                interface: str = "keypoint", kp_horizon: int = GOAL_K) -> None:
@@ -203,6 +213,19 @@ class PolicyRunner:
     self.kp_version = int(doc.get("kp_goal_version", 1))
     self.session = ort.InferenceSession(str(Path(deploy_dir) / "policy.onnx"),
                                         providers=["CPUExecutionProvider"])
+    self.goal_anchor = doc.get("goal_anchor", "reference")
+    if self.goal_anchor not in ("reference", "robot"):
+      raise ValueError(f"{robot}.json: unknown goal_anchor {self.goal_anchor!r}")
+    if self.goal_anchor == "robot" and self.robot.fk_pos is None:
+      raise ValueError(f"{robot}.json: the robot constants have no body offsets (`fk`"
+                       " `pos`), which the robot goal anchor needs; re-export")
+    # A motion-only export (e.g. --goal-anchor robot) has no five-point inputs, and a
+    # pooled one has its normalisers baked in: feed only the model's inputs.
+    self.input_names = {i.name for i in self.session.get_inputs()}
+    outputs = {o.name for o in self.session.get_outputs()}
+    if interface == "keypoint" and "action_keypoint" not in outputs:
+      raise ValueError(f"{deploy_dir}: this policy has no five-point interface;"
+                       " pass --interface motion")
     width = {i.name: i.shape[-1] for i in self.session.get_inputs()}["obs_history"]
     if width % PROPRIO_DIM:
       raise ValueError(f"obs_history width {width} is not a multiple of {PROPRIO_DIM}")
@@ -231,10 +254,16 @@ class PolicyRunner:
     self.last_action = np.zeros(29)
 
   def step(self, step_id: int, quat: np.ndarray, gyro: np.ndarray, q: np.ndarray,
-           dq: np.ndarray, cues: int = 0) -> np.ndarray:
+           dq: np.ndarray, cues: int = 0,
+           pose: tuple[np.ndarray, float] | None = None) -> np.ndarray:
     """Native joint targets [J] for the measurements of control step `step_id` (steps
     since the last reset, when the robot stood in reference frame 0); `cues` (the
-    remote's Y presses since then) go to a reference that takes them."""
+    remote's Y presses since then) go to a reference that takes them. `pose` is the
+    floating base's (world position [3], yaw), read under the robot goal anchor only,
+    where a missing or NaN pose raises RuntimeError (`NO_POSE_SOURCE`)."""
+    no_pose = pose is None or not (np.isfinite(pose[0]).all() and np.isfinite(pose[1]))
+    if self.goal_anchor == "robot" and no_pose:
+      raise RuntimeError(NO_POSE_SOURCE)
     if step_id < self.prev_step:
       self.reset()
       self.reference.reset()
@@ -245,14 +274,19 @@ class PolicyRunner:
     frame = proprio_frame(self.robot, q, dq, quat, gyro, self.last_action)
     obs = self.history.push(frame)
     ref = self.last_ref = self.reference.window(step_id, quat, q)
+    if self.goal_anchor == "robot":
+      anchor_pos, anchor_quat = self.robot.anchor_pose(pose[0], pose[1], quat, q)
+    else:
+      anchor_pos, anchor_quat = None, self.robot.anchor_quat(quat, q)
     feeds = {
       "obs_history": obs[None].astype(np.float32),
-      "goal_motion": goal_motion(ref, self.robot.anchor_quat(quat, q))[None],
+      "goal_motion": goal_motion(ref, anchor_quat, anchor_pos, self.goal_anchor)[None],
       "goal_keypoint": goal_keypoint(ref, self.robot.slot0_quat(quat, q),
                                      self.kp_version)[None],
       **self.kp_masks,
       **self.inputs,
     }
+    feeds = {k: v for k, v in feeds.items() if k in self.input_names}
     name = "action_motion" if self.interface == "motion" else "action_keypoint"
     action = self.session.run([name], feeds)[0][0].astype(np.float64)
     self.last_action = action
@@ -311,7 +345,8 @@ def main() -> None:
   j = runner.robot.num_native
   state_in = protocol.receiver(protocol.STATE_PORT, args.bind_host, timeout=0.5)
   action_out = protocol.sender(protocol.ACTION_PORT, args.robot_host, timeout=0.1)
-  print(f"[policy_node] {args.robot}: {args.interface} interface, {what}; state <- "
+  print(f"[policy_node] {args.robot}: {args.interface} interface, {what}; goal anchor"
+        f" {runner.goal_anchor}; state <- "
         f"{protocol.STATE_PORT}, action -> {protocol.ACTION_PORT}", flush=True)
   last, n, t_log, t_cost = time.monotonic(), 0, time.monotonic(), 0.0
   try:
@@ -324,7 +359,8 @@ def main() -> None:
         continue
       last = time.monotonic()
       step_id, quat, gyro, q, dq = protocol.unpack_state(data, j)
-      targets = runner.step(step_id, quat, gyro, q, dq, protocol.state_cues(data, j))
+      targets = runner.step(step_id, quat, gyro, q, dq, protocol.state_cues(data, j),
+                            protocol.state_pose(data, j))
       try:
         action_out.send(protocol.pack_action(step_id, targets))
       except zmq.Again:  # The robot side is gone; its next state message resumes us.

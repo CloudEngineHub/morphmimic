@@ -10,13 +10,17 @@ and the reference motion:
   velocities, the gyro and the gravity direction in the IMU frame, the last action.
 - `goal_motion`: the 670-value motion goal, `rewards_torch.goal_features` (goal
   version 2): reference joints, the reference anchor path in its own heading frame,
-  the reference anchor orientation relative to the robot anchor.
+  the reference anchor orientation relative to the robot anchor. Under the "robot"
+  goal anchor (`--goal-anchor robot`) the anchor path is in the robot anchor's frame
+  instead (goal version 1's), which needs the robot's position.
 - `goal_keypoint`: the 450 five-point features, `keypoints.keypoint_features`.
 
 The goals need the orientations of the anchor (torso) and of slot 0 (the
 pelvis-equivalent, whose heading frames the five-point goal); `Robot.anchor_quat` and
 `Robot.slot0_quat` compute them from the IMU and the joint encoders through the robot's
-kinematic tree. Each function mirrors its torch original. Quaternions are wxyz.
+kinematic tree. Under the "robot" anchor, `Robot.anchor_pose` adds the anchor's
+position from the floating base's position and yaw (a pose source). Each function
+mirrors its torch original. Quaternions are wxyz.
 """
 
 from __future__ import annotations
@@ -65,6 +69,14 @@ def quat_inv(q: np.ndarray) -> np.ndarray:
   """Inverse (conjugate over the squared norm, as mjlab's `quat_inv`)."""
   conj = q * np.array([1.0, -1.0, -1.0, -1.0], dtype=q.dtype)
   return conj / np.sum(q * q, axis=-1, keepdims=True).clip(min=1e-9)
+
+
+def quat_apply(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+  """Rotates `v` by the unit quaternion `q`."""
+  w = q[..., :1]
+  xyz = q[..., 1:]
+  t = 2.0 * np.cross(xyz, v)
+  return v + w * t + np.cross(xyz, t)
 
 
 def quat_apply_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -130,6 +142,9 @@ class Robot:
   """Each tree body's orientation in its parent at zero joint angles [n, 4]."""
   fk_joints: tuple[tuple[tuple[int, np.ndarray, float], ...], ...]
   """Each tree body's hinge joints: (native joint index, axis, reference angle)."""
+  fk_pos: np.ndarray | None
+  """Each tree body's position in its parent [n, 3] (the root's is zero); None in
+  constants baked before it (`anchor_pose` then raises)."""
   fk_slot0: int
   fk_anchor: int
   fk_imu: int
@@ -179,6 +194,8 @@ class Robot:
               for j in b["joints"])
         for b in fk["bodies"]
       ),
+      fk_pos=(np.asarray([b["pos"] for b in fk["bodies"]], np.float64)
+              if all("pos" in b for b in fk["bodies"]) else None),
       fk_slot0=fk["slot0"],
       fk_anchor=fk["anchor"],
       fk_imu=fk["imu"],
@@ -230,6 +247,28 @@ class Robot:
     """World orientation of tracked slot 0 (the pelvis-equivalent)."""
     return self._from_imu(imu_quat, q, self.fk_slot0)
 
+  def anchor_pose(self, base_pos: np.ndarray, base_yaw: float, imu_quat: np.ndarray,
+                  q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """World position [3] and orientation [4] of the anchor body (torso) from the
+    floating base's (the tree's root body: the G1 and X2 pelvis, the T2 trunk) world
+    position and yaw (rad), as a pose source gives them, the IMU orientation (the
+    base's roll and pitch) and the native joint positions. The yaw is the pose
+    source's, so position and orientation share its world frame."""
+    if self.fk_pos is None:
+      raise ValueError(f"{self.name}: the robot constants have no body offsets (`fk` "
+                       "`pos`); re-export them (export_assets.py --bake, export_onnx.py)")
+    rel = self._tree_quats(q)
+    root = quat_mul(imu_quat, quat_inv(rel[self.fk_imu]))
+    turn = axis_angle_quat(np.array([0.0, 0.0, 1.0]), np.asarray(base_yaw))
+    root = quat_mul(turn, quat_mul(quat_inv(yaw_quat(root)), root))
+    pos = np.zeros((len(self.fk_parent), 3))
+    for b, parent in enumerate(self.fk_parent):
+      if parent >= 0:
+        pos[b] = pos[parent] + quat_apply(rel[parent], self.fk_pos[b])
+    anchor = self.fk_anchor
+    return (np.asarray(base_pos, np.float64) + quat_apply(root, pos[anchor]),
+            quat_mul(root, rel[anchor]))
+
 
 # Policy inputs.
 
@@ -272,13 +311,24 @@ def _bodies(states: np.ndarray, part: slice, width: int) -> np.ndarray:
   return states[..., part].reshape(*states.shape[:-1], NUM_BODIES, width)
 
 
-def goal_motion(ref: np.ndarray, robot_anchor_quat: np.ndarray) -> np.ndarray:
-  """Motion goal [K * 67] from the K reference states `ref` [K, 240]
-  (`rewards_torch.goal_features`)."""
+def goal_motion(ref: np.ndarray, robot_anchor_quat: np.ndarray,
+                robot_anchor_pos: np.ndarray | None = None,
+                anchor: str = "reference") -> np.ndarray:
+  """Motion goal [K * 67] from the K reference states `ref` [K, 240] and the robot
+  anchor's world orientation (and, under `anchor="robot"`, its world position, in the
+  reference's world) (`rewards_torch.goal_features(..., anchor)`)."""
   pos, quat = _bodies(ref, _POS, 3), _bodies(ref, _QUAT, 4)
-  ref_yaw = yaw_quat(quat[0, ROOT_IDX])
-  origin = np.array([pos[0, ROOT_IDX, 0], pos[0, ROOT_IDX, 1], 0.0])
-  anchor_pos = quat_apply_inverse(ref_yaw[None], pos[:, ANCHOR_IDX] - origin)
+  if anchor == "robot":
+    if robot_anchor_pos is None:
+      raise ValueError("the robot goal anchor needs the robot anchor position")
+    anchor_pos = quat_apply_inverse(robot_anchor_quat[None],
+                                    pos[:, ANCHOR_IDX] - robot_anchor_pos[None])
+  elif anchor == "reference":
+    ref_yaw = yaw_quat(quat[0, ROOT_IDX])
+    origin = np.array([pos[0, ROOT_IDX, 0], pos[0, ROOT_IDX, 1], 0.0])
+    anchor_pos = quat_apply_inverse(ref_yaw[None], pos[:, ANCHOR_IDX] - origin)
+  else:
+    raise ValueError(f"Expected anchor 'reference' or 'robot', got {anchor!r}.")
   anchor_rel = quat_mul(quat_inv(robot_anchor_quat)[None], quat[:, ANCHOR_IDX])
   frames = np.concatenate((ref[:, _Q], ref[:, _QD], anchor_pos, rot6d(anchor_rel)), axis=-1)
   return frames.reshape(-1).astype(np.float32)

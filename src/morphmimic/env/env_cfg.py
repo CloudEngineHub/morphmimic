@@ -37,7 +37,7 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.utils.spec_config import GeomCfg
 from torch import Tensor
 
-from morphmimic.constants import OBS_NOISE
+from morphmimic.constants import OBS_NOISE, GoalAnchor
 from morphmimic.env import observations as obs
 from morphmimic.env import terminations
 from morphmimic.env.actions import CanonicalJointPositionActionCfg
@@ -108,6 +108,7 @@ def morphmimic_env_cfg(
   play: bool = False,
   eval: bool = False,
   actuator_delay: bool = True,
+  goal_anchor: GoalAnchor = "reference",
 ) -> ManagerBasedRlEnvCfg:
   """Env cfg of `robot` (a `morphmimic.robots` registry name) over the clips of
   `subset_yaml` (the library is built with the env; its clips must be that robot's).
@@ -120,6 +121,9 @@ def morphmimic_env_cfg(
 
   actuator_delay: random position-target delay of 0–40 ms, resampled every physics
   step by mjlab's actuator buffers. Disabled in nominal eval mode.
+
+  goal_anchor: frame of the motion goal's anchor position
+  (`MultiMotionCommandCfg.goal_anchor`, `rewards_torch.goal_features`).
   """
   spec = get_robot(robot)
   cfg = make_tracking_env_cfg()
@@ -168,6 +172,7 @@ def morphmimic_env_cfg(
     pose_range=dict(mjlab_cmd.pose_range),
     velocity_range=dict(mjlab_cmd.velocity_range),
     joint_position_range=mjlab_cmd.joint_position_range,
+    goal_anchor=goal_anchor,
   )
   cfg.commands = {COMMAND_NAME: cmd}
   cfg.observations = _observations(spec)

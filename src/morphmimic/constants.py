@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 # Tracked bodies, same order as mjlab's G1 tracking task.
 # Index order matters everywhere.
 TRACKED_BODY_NAMES: tuple[str, ...] = (
@@ -86,6 +88,12 @@ GOAL_DIM = 670
 # "goal_version": 1 = robot-relative positions (checkpoints without the entry),
 # 2 = position-free. A policy only works with the version it was trained on.
 GOAL_VERSION = 2
+# Frame of the motion goal's anchor position (`rewards_torch.goal_features`): "reference"
+# (default), the reference's own heading frame (position-free); "robot", the current
+# robot anchor frame, as goal version 1 (needs the robot's pose at deploy, from a state
+# estimator). Saved in the checkpoint cfg as `goal_anchor`.
+GoalAnchor = Literal["reference", "robot"]
+GOAL_ANCHORS: tuple[GoalAnchor, ...] = ("reference", "robot")
 # Version of the five-point goal's orientations, saved in checkpoints as
 # "kp_goal_version": 1 = relative to the robot pelvis heading (yaw only; checkpoints
 # without the entry), 2 = relative to the robot pelvis's full orientation (the IMU's).

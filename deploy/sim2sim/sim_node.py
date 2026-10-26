@@ -3,7 +3,9 @@
 Loads a robot's exported scene XML (`export_assets.py`: the trained model, readable),
 starts it in the clip's first reference pose and plays the clip in lock step with
 `policy_node.py` over the `protocol` messages, as the robot would: each control step it
-sends the joint encoders and the IMU (the IMU body's orientation and gyro), waits for the policy's targets for that
+sends the joint encoders and the IMU (the IMU body's orientation and gyro), and the
+floating base's true pose (`SimPoseSource`, the pose a state estimator gives on
+hardware, read only by a robot-anchor policy), waits for the policy's targets for that
 step, applies them (optionally delayed) and steps the physics `decimation` times. The
 targets go to the position actuators, or, for the DC-motor joints (the X2's, as in
 training), into an explicit PD clipped to the motor's torque-speed curve, recomputed
@@ -40,6 +42,7 @@ import mujoco
 import numpy as np
 import zmq
 
+from deploy.hardware.pose_source import SimPoseSource
 from deploy.sim2sim import protocol
 from deploy.sim2sim.obs import ANCHOR_IDX, Robot, quat_apply_inverse, quat_mul, yaw_quat
 from deploy.vr_teleop.constants import FALL_HEIGHT, FALL_TILT_DEG
@@ -102,6 +105,7 @@ class SimRobot:
                   act.effort_limit[joint], act.dc_saturation[joint],
                   act.dc_velocity_limit[joint])
     self.targets = np.zeros(m.nu)
+    self.pose_source = SimPoseSource(m, self.data)
 
   def reset(self, qpos: np.ndarray, qvel: np.ndarray) -> None:
     mujoco.mj_resetData(self.model, self.data)
@@ -403,7 +407,8 @@ def run(xml: Path, robot: Robot, clip: Path, delay_ms: float = 0.0,
     for step in range(len(states) - 1):
       t0 = time.monotonic()
       quat, gyro, q, dq = sim.measure()
-      state_out.send(protocol.pack_state(step, quat, gyro, q, dq))
+      pos, yaw = sim.pose_source.pose()
+      state_out.send(protocol.pack_state(step, quat, gyro, q, dq, pelvis_pos=pos, pelvis_yaw=yaw))
       while True:
         try:
           data = action_in.recv()
@@ -506,7 +511,8 @@ def run_teleop(xml: Path, robot: Robot, delay_ms: float = 0.0, video: Path | Non
       t0 = time.monotonic()
       quat, gyro, q, dq = sim.measure()
       cues = sum(step >= c for c in cue_steps)
-      state_out.send(protocol.pack_state(step, quat, gyro, q, dq, cues))
+      pos, yaw = sim.pose_source.pose()
+      state_out.send(protocol.pack_state(step, quat, gyro, q, dq, cues, pos, yaw))
       while True:
         try:
           got, targets = protocol.unpack_action(action_in.recv(), robot.num_native)
