@@ -10,8 +10,9 @@ the training models). Velocities are backward differences at 50 Hz.
 
 PICO frames: GMR's configs (its G1 one, our fitted X2 and T2 ones) are authored in the
 frame GMR's `XRobotStreamer` makes of the raw samples: positions `M p`, orientations
-`q_M * q` with `M` = [[1, 0, 0], [0, 0, -1], [0, 1, 0]] (Unity's y-up to z-up). This
-module applies that transform (`pico_to_gmr`); `gmr_to_pico` inverts it for synthetic sessions.
+`q_M * q` with `M` = [[1, 0, 0], [0, 0, -1], [0, 1, 0]] (Unity's y-up to z-up). That is
+not SONIC's transform (`retarget.unity_to_robot`, the five-point path), so this module
+does GMR's (`pico_to_gmr`); `gmr_to_pico` inverts it for synthetic sessions.
 
 Calibration (A+B+X+Y, the operator standing): GMR solves the pose to convergence from
 the neutral stand (`GmrRetargeter.settle`) and one height offset is fixed so the
@@ -26,20 +27,12 @@ import json
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from deploy.sim2sim.human import PICO_JOINTS, SMPL_PARENT
 from deploy.sim2sim.obs import Robot
 from deploy.vr_teleop.gmr_retarget import STAND_FILE, GmrRetargeter
 from deploy.vr_teleop.protocol import RefFrame, RefMessage, encode_ref
 
 FPS = 50
-# PICO's 24 body joints (XRoboToolkit, SMPL order) and their SMPL parents.
-PICO_JOINTS = (
-  "Pelvis", "Left_Hip", "Right_Hip", "Spine1", "Left_Knee", "Right_Knee", "Spine2",
-  "Left_Ankle", "Right_Ankle", "Spine3", "Left_Foot", "Right_Foot", "Neck",
-  "Left_Collar", "Right_Collar", "Head", "Left_Shoulder", "Right_Shoulder",
-  "Left_Elbow", "Right_Elbow", "Left_Wrist", "Right_Wrist", "Left_Hand", "Right_Hand",
-)  # fmt: skip
-SMPL_PARENT = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18,
-               19, 20, 21)  # fmt: skip
 _M = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 _M_ROT = R.from_matrix(_M)
 
@@ -78,7 +71,7 @@ class ReferenceBuilder:
     self._bodies = [m.body(b).id for b in self.robot.tracked_bodies]
     self._ankles = [self.robot.tracked_bodies.index(f"{s}_ankle_roll_link")
                     for s in ("left", "right")]
-    self._stand = json.loads(STAND_FILE.read_text())[robot]
+    self._stand = json.loads(STAND_FILE.read_text())[self.robot.body]
     self.z_offset = 0.0
     self._prev: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 

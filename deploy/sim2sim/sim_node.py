@@ -16,13 +16,13 @@ sees: failure as in training (anchor height off by more than 0.25 m, or tilt off
 than 0.8 in the gravity z component), the joint and tracked-body errors, and the drift
 of the anchor in the reference heading frame. `--viewer native` shows the run live and
 `--video` renders it, both with what the policy tracks drawn in: the reference as a
-translucent ghost, or with `--overlay keypoint` the five-point targets (a dot per
-point, its preview trajectory and a fading trail).
+translucent ghost.
 
 Teleop (`--teleop`, with `policy_node.py --source teleop`): no clip and no reference to
 score against; the robot starts in the neutral stand and runs in real time until the
 viewer closes (or `--max-steps`), a fall resetting it to the stand. The overlay is the
-window the policy node reports tracking (`LiveOverlay`).
+window the policy node reports tracking (`LiveOverlay`), as a trace of its pelvis,
+ankles and wrists.
 
   uv run --group export python -m deploy.sim2sim.sim_node <assets>/g1.xml --robot g1 \\
     --clip <assets>/clips/g1/<clip>.npz [--video out.mp4] [--delay-ms 20]
@@ -104,6 +104,7 @@ class SimRobot:
       self._dc = (self.qadr[joint], self.dadr[joint], act.kp[joint], act.kd[joint],
                   act.effort_limit[joint], act.dc_saturation[joint],
                   act.dc_velocity_limit[joint])
+      self._dc_law = act.dc_law
     self.targets = np.zeros(m.nu)
     self.pose_source = SimPoseSource(m, self.data)
 
@@ -119,11 +120,15 @@ class SimRobot:
     self.data.ctrl[~self.motor] = self.targets[~self.motor]
 
   def dc_torque(self) -> np.ndarray:
-    """The DC-motor joints' torque now (mjlab `DcMotorActuator`): kp (target - q) - kd qd,
-    within [-limit, limit] and the torque-speed curve sat (+-1 - qd / v_max)."""
+    """The DC-motor joints' torque now: kp (target - q) - kd qd, within [-limit, limit]
+    and the torque-speed curve, mjlab's `DcMotorActuator` sat (+-1 - qd / v_max) or
+    Booster's two-sided +-max(0, sat (1 - |qd| / v_max)) (`robots.booster_motor`)."""
     qadr, dadr, kp, kd, limit, sat, vmax = self._dc
     q, qd = self.data.qpos[qadr], self.data.qvel[dadr]
     torque = kp * (self.targets[self.motor] - q) - kd * qd
+    if self._dc_law == "booster":
+      bound = np.minimum(np.maximum(sat * (1 - np.abs(qd) / vmax), 0.0), limit)
+      return np.clip(torque, -bound, bound)
     v = np.clip(qd, -vmax * (1 + limit / sat), vmax * (1 + limit / sat))
     upper = np.minimum(sat * (1 - v / vmax), limit)
     lower = np.maximum(sat * (-1 - v / vmax), -limit)
@@ -208,19 +213,15 @@ class Tracker:
     }
 
 
-# Five-point trace:
-# per point (pelvis, left ankle, right ankle, left wrist, right wrist) a sphere at the
-# current target, a line through the preview frames, a fading trail.
-KP_IDX = (0, 3, 6, 10, 13)
-KP_COLORS = ((1.0, 0.85, 0.1), (1.0, 0.45, 0.1), (0.1, 0.8, 0.9), (0.9, 0.15, 0.25),
-             (0.2, 0.4, 1.0))
+# The teleop window's trace (`LiveOverlay`): per body (pelvis, left ankle, right ankle,
+# left wrist, right wrist) a sphere at the current target, a line through the preview
+# frames, a fading trail.
+TRACE_IDX = (0, 3, 6, 10, 13)
+TRACE_COLORS = ((1.0, 0.85, 0.1), (1.0, 0.45, 0.1), (0.1, 0.8, 0.9), (0.9, 0.15, 0.25),
+                (0.2, 0.4, 1.0))
 TARGET_RADIUS, PREVIEW_RADIUS, TRAIL_RADIUS = 0.04, 0.016, 0.010
 TRAIL_ALPHA = (0.3, 0.9)
 GHOST_RGBA = (0.3, 0.6, 1.0, 0.3)
-GOAL_K = 10
-# The policy's targets at control step t are reference frames t + 1 .. t + K
-# (`policy_node.REFERENCE_LEAD`).
-REFERENCE_LEAD = 1
 # Teleop (`run_teleop`): the stand's feet start this far above the floor.
 STAND_CLEARANCE = 0.01
 
@@ -248,47 +249,33 @@ def _segment(scene: mujoco.MjvScene, a: np.ndarray, b: np.ndarray, radius: float
 
 
 class Overlay:
-  """What the policy is asked to track, drawn into a scene: the reference as a ghost
-  (`ghost`, the motion interface) or the five-point targets with their preview and
-  trail (`keypoint`)."""
+  """What the policy is asked to track, drawn into a scene: the reference as a
+  translucent ghost."""
 
-  def __init__(self, sim: SimRobot, ref, mode: str = "ghost", trail_len: int = 50) -> None:
-    if mode not in ("ghost", "keypoint"):
-      raise ValueError(f"overlay must be ghost or keypoint, got {mode!r}")
-    self.sim, self.mode = sim, mode
+  def __init__(self, sim: SimRobot, ref, mode: str = "ghost") -> None:
+    if mode != "ghost":
+      raise ValueError(f"overlay must be ghost, got {mode!r}")
+    self.sim = sim
     self.ghost_qpos = ref["ghost_qpos"]
     self.ghost = mujoco.MjData(sim.model)
     self.option, self.perturb = mujoco.MjvOption(), mujoco.MjvPerturb()
-    self.kp = _split(ref["states"].astype(np.float64))[1][:, list(KP_IDX)]  # [T, 5, 3]
-    self.trail: list[np.ndarray] = []
-    self.trail_len = trail_len
-
-  def advance(self, step: int) -> None:
-    """The robot is at control step `step`: its targets move on."""
-    frame = min(step + REFERENCE_LEAD, len(self.kp) - 1)
-    self.trail = (self.trail + [self.kp[frame]])[-self.trail_len:]
 
   def draw(self, scene: mujoco.MjvScene, step: int) -> None:
-    last = len(self.kp) - 1
-    if self.mode == "ghost":
-      self.ghost.qpos[:] = self.ghost_qpos[min(step, last)]
-      mujoco.mj_kinematics(self.sim.model, self.ghost)
-      start = scene.ngeom
-      mujoco.mjv_addGeoms(self.sim.model, self.ghost, self.option, self.perturb,
-                          mujoco.mjtCatBit.mjCAT_DYNAMIC, scene)
-      for g in range(start, scene.ngeom):
-        scene.geoms[g].rgba[:] = GHOST_RGBA
-      return
-    frames = np.minimum(np.arange(step + REFERENCE_LEAD, step + REFERENCE_LEAD + GOAL_K), last)
-    draw_keypoints(scene, self.kp[frames], self.trail)
+    self.ghost.qpos[:] = self.ghost_qpos[min(step, len(self.ghost_qpos) - 1)]
+    mujoco.mj_kinematics(self.sim.model, self.ghost)
+    start = scene.ngeom
+    mujoco.mjv_addGeoms(self.sim.model, self.ghost, self.option, self.perturb,
+                        mujoco.mjtCatBit.mjCAT_DYNAMIC, scene)
+    for g in range(start, scene.ngeom):
+      scene.geoms[g].rgba[:] = GHOST_RGBA
 
 
-def draw_keypoints(scene: mujoco.MjvScene, future: np.ndarray, trail: list[np.ndarray]) -> None:
-  """The five-point trace: `future` [K, 5, 3] (the targets and their preview) and the
-  fading `trail` of past targets."""
+def draw_trace(scene: mujoco.MjvScene, future: np.ndarray, trail: list[np.ndarray]) -> None:
+  """The trace of the `TRACE_IDX` bodies: `future` [K, 5, 3] (the targets and their
+  preview) and the fading `trail` of past targets."""
   trail = trail or [future[0]]
   alphas = np.linspace(*TRAIL_ALPHA, max(1, len(trail) - 1))
-  for p, rgb in enumerate(KP_COLORS):
+  for p, rgb in enumerate(TRACE_COLORS):
     for i in range(len(trail) - 1):
       _segment(scene, trail[i][p], trail[i + 1][p], TRAIL_RADIUS, (*rgb, alphas[i]))
     prev = future[0][p]
@@ -300,8 +287,9 @@ def draw_keypoints(scene: mujoco.MjvScene, future: np.ndarray, trail: list[np.nd
 
 class LiveOverlay:
   """The window the policy node tracks in teleop (`protocol.DISPLAY_PORT`), drawn as the
-  five-point trace. The goals are position-free, so the window is drawn where they put
-  it: its frame-0 pelvis at the robot's pelvis (x, y) of this step."""
+  trace of its pelvis, ankles and wrists (`draw_trace`). The goals are position-free, so
+  the window is drawn where they put it: its frame-0 pelvis at the robot's pelvis (x, y)
+  of this step."""
 
   def __init__(self, sim: SimRobot, trail_len: int = 50) -> None:
     self.sim, self.trail_len = sim, trail_len
@@ -309,18 +297,15 @@ class LiveOverlay:
     self.trail: list[np.ndarray] = []
 
   def update(self, window: np.ndarray) -> None:
-    kp = _split(window)[1][:, list(KP_IDX)]
+    pos = _split(window)[1][:, list(TRACE_IDX)]
     robot_xy = self.sim.data.xpos[self.sim.bodies[0], :2]
-    kp = kp + np.array([*(robot_xy - kp[0, 0, :2]), 0.0])
-    self.future = kp
-    self.trail = (self.trail + [kp[0]])[-self.trail_len:]
-
-  def advance(self, step: int) -> None:
-    pass
+    pos = pos + np.array([*(robot_xy - pos[0, 0, :2]), 0.0])
+    self.future = pos
+    self.trail = (self.trail + [pos[0]])[-self.trail_len:]
 
   def draw(self, scene: mujoco.MjvScene, step: int) -> None:
     if self.future is not None:
-      draw_keypoints(scene, self.future, self.trail)
+      draw_trace(scene, self.future, self.trail)
 
 
 class Video:
@@ -378,7 +363,7 @@ def run(xml: Path, robot: Robot, clip: Path, delay_ms: float = 0.0,
         viewer: bool = False, overlay: str = "ghost") -> dict:
   """Plays `clip` with the policy node answering on the protocol ports; the summary.
   `viewer` shows the run live (paced at real time); `overlay` is what the video and the
-  viewer draw: the reference `ghost` or the `keypoint` targets."""
+  viewer draw: the reference `ghost`."""
   ref = np.load(clip)
   states = ref["states"].astype(np.float64)
   sim = SimRobot(xml, robot)
@@ -395,7 +380,6 @@ def run(xml: Path, robot: Robot, clip: Path, delay_ms: float = 0.0,
   state_out = protocol.sender(protocol.STATE_PORT)
 
   def show(step: int) -> None:
-    drawn.advance(step)
     if recorder:
       recorder.capture(step)
     if live:
@@ -480,15 +464,19 @@ def fallen(sim: SimRobot) -> bool:
 def run_teleop(xml: Path, robot: Robot, delay_ms: float = 0.0, video: Path | None = None,
                timeout_s: float = 5.0, viewer: bool = False,
                max_steps: int | None = None, start_yaw_deg: float = 0.0,
-               cue_steps: tuple[int, ...] = ()) -> dict:
+               cue_steps: tuple[int, ...] = (), trace: Path | None = None) -> dict:
   """The robot driven live by the policy node (`--source teleop`), from the neutral
   stand, in real time, until the viewer closes or after `max_steps` control steps. A
   fall resets the robot to the stand and the step count to 0, which the policy node
   takes as a reset (it holds OFF until the operator recalibrates). `cue_steps`: the
-  steps (since the start or a fall) at which the remote's Y is pressed."""
+  steps (since the start or a fall) at which the remote's Y is pressed. `trace`: write
+  an npz with, per control step, the robot's canonical joint angles `q`, its IMU
+  quaternion `quat` (wxyz), `ref`, frame 0 of the reference window the policy node
+  tracked (240-d, NaN before the first window; always NaN under the human interface,
+  whose window the sim is not sent), and the simulator's full `qpos` (for rendering)."""
   from deploy.vr_teleop.gmr_retarget import STAND_FILE
 
-  stand = json.loads(STAND_FILE.read_text())[robot.name]
+  stand = json.loads(STAND_FILE.read_text())[robot.body]
   sim = SimRobot(xml, robot)
   init = stand_qpos(sim.model, sim, stand, start_yaw_deg)
   sim.reset(init, np.zeros(sim.model.nv))
@@ -504,6 +492,8 @@ def run_teleop(xml: Path, robot: Robot, delay_ms: float = 0.0, video: Path | Non
   step, total, falls, t_start = 0, 0, 0, time.monotonic()
   start = _planar_pose(sim)
   joint_err: list[float] = []  # Against frame 0 of the window the policy node tracked.
+  rows: dict[str, list] = {"step": [], "q": [], "quat": [], "ref": [], "qpos": []}
+  last_ref = np.full(240, np.nan)
   print(f"[sim_node] {robot.name}: teleop, standing; {'close the viewer' if viewer else 'Ctrl-C'}"
         " to stop", flush=True)
   try:
@@ -533,8 +523,15 @@ def run_teleop(xml: Path, robot: Robot, delay_ms: float = 0.0, video: Path | Non
         drawn.update(window)
         q_canon = robot.to_canonical(sim.data.qpos[sim.qadr])
         joint_err.append(float(np.sqrt(np.mean((q_canon - window[0, :29]) ** 2))))
+        last_ref = np.asarray(window[0], dtype=np.float64)
       except zmq.Again:
         pass
+      if trace is not None:
+        rows["step"].append(step)
+        rows["q"].append(robot.to_canonical(sim.data.qpos[sim.qadr]))
+        rows["quat"].append(sim.measure()[0])
+        rows["ref"].append(last_ref)
+        rows["qpos"].append(sim.data.qpos.copy())
       total += 1
       if fallen(sim):
         falls += 1
@@ -575,6 +572,13 @@ def run_teleop(xml: Path, robot: Robot, delay_ms: float = 0.0, video: Path | Non
   if recorder:
     recorder.save(video, 1.0 / robot.control_dt)
     summary["video"] = str(video)
+  if trace is not None:
+    np.savez_compressed(trace, step=np.asarray(rows["step"]), q=np.asarray(rows["q"]),
+                        quat=np.asarray(rows["quat"]), ref=np.asarray(rows["ref"]),
+                        qpos=np.asarray(rows["qpos"]), control_dt=robot.control_dt,
+                        joint_names=np.asarray([robot.native_joint_names[i]
+                                                for i in robot.perm]))
+    summary["trace"] = str(trace)
   return summary
 
 
@@ -594,9 +598,8 @@ def main() -> None:
   parser.add_argument("--realtime", action="store_true", help="pace the loop at 50 Hz")
   parser.add_argument("--viewer", choices=["none", "native"], default="none",
                       help="native: MuJoCo's live viewer (needs a display; real time)")
-  parser.add_argument("--overlay", choices=["ghost", "keypoint"], default="ghost",
-                      help="drawn in the viewer and video: the reference ghost, or the"
-                           " five-point targets with preview and trail")
+  parser.add_argument("--overlay", choices=["ghost"], default="ghost",
+                      help="drawn in the viewer and video: the reference ghost")
   parser.add_argument("--summary", type=Path, default=None, help="write the summary json")
   args = parser.parse_args()
   if args.robot_json:

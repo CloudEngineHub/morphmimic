@@ -25,16 +25,21 @@ masses) that tells them which body they are driving.
 
 The policy has two goal interfaces:
 
-- **motion**: follow a full reference motion (all joints and bodies);
-- **five-point**: follow sparse targets for the pelvis, both wrists and both ankles,
-  which is what a VR headset with two controllers and two ankle trackers gives you.
+- **motion**: follow a full reference motion of the robot (all joints and bodies);
+- **human**: follow a human directly, as the 24 SMPL joints of a uniform skeleton over
+  the next 10 frames, all of them (`full`) or only the pelvis, wrists and ankles
+  (`five`, which is what a VR headset with two controllers and two ankle trackers
+  gives you). No retargeting: a PICO headset's body tracking goes straight into the
+  policy. A human encoder is distilled from the motion interface and feeds the same
+  decoder, so one policy serves both.
 
 **No explicit state estimation.** The policy reads only the IMU (orientation and
 angular velocity) and the joint encoders. Its goals are position-free: the motion
-goal's path is expressed in the reference's own heading frame, and the five points
-relative to the reference pelvis. So the robot never needs to know where it is in the
-room, and you do not need odometry, motion capture or a base-velocity estimator. Only
-the critics see the robot's offset from the reference, and they are used only in
+goal's path is expressed in the reference's own heading frame, and the human skeleton in
+its own heading frame, plus the human chest's orientation relative to the robot's torso
+(from the IMU and the waist encoders). So the robot never needs to know where it is in
+the room, and you do not need odometry, motion capture or a base-velocity estimator.
+Only the critics see the robot's offset from the reference, and they are used only in
 training.
 
 If you do have the robot's pose (motion capture, or a state estimator), the anchor mode
@@ -45,20 +50,26 @@ robot itself instead, so the policy corrects its drift from the reference path.
 
 ```
 src/morphmimic/
-  data/          SEED CSV -> 50 Hz npz, clip filters, subsets, GPU motion library
+  data/          SEED CSV -> 50 Hz npz, SOMA BVH -> human sidecars, clip filters,
+                 subsets, GPU motion library
   env/           mjlab tracking env (multi-clip command, reset sampling, observations)
-  model/         state layout, analytic reward heads, world model, policy, critic
+  model/         state layout, analytic reward heads, world model, policy, critic,
+                 human goal features
   robots/        G1, X2 Ultra and T2: registry, translator to the 29-joint layout,
-                 morphology vector, vendored X2 and T2 models
+                 morphology vector, vendored X2 and T2 models and their actuators
   train/         replay buffer, collector, imagination, trainer, multi-robot sharing
-  scripts/       convert_seed, build_subsets, train
+  eval/          benchmark, drift diagnostic, policy loader
+  scripts/       convert_seed, convert_human, check_human, build_subsets, train, eval,
+                 drift, play, render
 tools/soma_retargeter/   retargets the SEED motions to the X2 and the T2
 deploy/
   export_onnx.py         training checkpoint -> policy.onnx + <robot>.json
+  export_ckpt.py         training checkpoint -> inference-only checkpoint
   run.py                 one-command deployment: the policy node plus the sim or the G1
   sim2sim/               policy node (onnxruntime) + CPU MuJoCo sim node, over ZMQ
-  vr_teleop/             PICO headset reader, GMR retargeting, streamer
-  hardware/g1_node.py    the real G1 on the same protocol as the sim
+  vr_teleop/             PICO headset reader, human skeleton and GMR targets, streamer
+  hardware/              the real G1 on the same protocol as the sim, safety layer
+  onboard/               everything on the G1's own computer, PICO in a container
   tools/                 headset-free test sessions for teleop
 ```
 
@@ -94,6 +105,18 @@ uv run python -m morphmimic.scripts.build_subsets \
 
 This writes `subsets/{tiny,1h,7h,40h,all}.yaml`. The filters keep 129,398 clips
 (262.8 h).
+
+**Human sidecars** (for the human interface). Download SEED's SOMA uniform-skeleton BVH
+files (`soma_uniform/bvh/<session>/*.bvh`) and convert them to 50 Hz sidecars of the 24
+SMPL joints, one per clip, in `human50/` next to the clips. The clips are the same for
+every robot, so the G1's sidecars serve the X2 and the T2 too:
+
+```bash
+uv run python -m morphmimic.scripts.convert_human --npz-root $DATA/seed_g1_npz50 \
+  --bvh-root $DATA/seed/soma_uniform/bvh --workers 96
+uv run python -m morphmimic.scripts.check_human \
+  --subset-yaml $DATA/seed_g1_npz50/subsets/1h.yaml      # sidecars against their clips
+```
 
 **X2 Ultra and T2.** SEED has no retarget for these two robots, so we retarget the SOMA
 BVH files with NVIDIA's [SOMA Retargeter](https://github.com/NVIDIA/soma-retargeter)
@@ -132,9 +155,17 @@ robot on each GPU, so they need three GPUs on one machine.
 G1=$DATA/seed_g1_npz50/subsets/all.yaml
 X2=$DATA/seed_x2_npz50/subsets/all.yaml
 T2=$DATA/seed_t2_npz50/subsets/all.yaml
-COMMON="--kp-interface --kp-masking full --library-dtype float16 \
-  --iterations 40000 --ckpt-every 4000 --log-dir logs"
+COMMON="--kp-interface --kp-student copy --no-kp-preview-mix \
+  --human-root $DATA/seed_g1_npz50/human50 --library-dtype float16 \
+  --iterations 60000 --ckpt-every 4000 --log-dir logs"
 ```
+
+`COMMON` is our current recipe: it trains the human interface next to the motion
+interface. The human encoder is a student of the motion encoder (`--kp-student copy`:
+it copies the motion interface's action and pulls its latent towards the motion
+latent, on its own imagined states), half of its samples see all 24 joints and half
+only the five (`--kp-masking mixed`, the default), and it always sees the full
+10-frame preview (`--no-kp-preview-mix`).
 
 **Unified: one world model and one policy for all three robots:**
 
@@ -142,6 +173,11 @@ COMMON="--kp-interface --kp-masking full --library-dtype float16 \
 uv run python -m morphmimic.scripts.train --robots g1 x2 t2 \
   --subset-yamls $G1 $X2 $T2 --share all --gpu-ids "[0,1,2]" $COMMON --run-name unified
 ```
+
+If your G1's waist roll and pitch motors are weak (ours are), train with `g1_amber`
+in place of `g1` (`--robots g1_amber x2 t2`, same subset yamls): the G1 with the waist
+roll/pitch damping raised to 3.0 (from 1.81). The policy we run on our G1 comes from
+this run. Deploy it as in [Deploy](#deploy), with `--robot g1_amber` on the G1.
 
 **One world model, a policy per robot:**
 
@@ -166,8 +202,11 @@ uv run python -m morphmimic.scripts.train --robot g1 --subset-yaml $G1 --gpu 0 \
 
 Notes:
 
-- `--kp-interface` also trains the five-point interface. Leave it out to train only
-  the motion interface.
+- `--kp-interface` also trains the human interface; it needs the human sidecars
+  (`--human-root`). Leave the four human flags out to train only the motion interface.
+- `--kp-drift` and `--kp-jitter` add slow drift and per-joint noise to the human
+  encoder's input. Both are off by default: a three-robot policy trained with them
+  chattered on our real G1.
 - A multi-robot run writes each robot's checkpoints to `logs/<run>/<robot>/`
   (`ckpt_<it>.pt` and `latest.pt`).
 - To resume, run the same command with `--resume logs/<run>/latest.pt` (single robot)
@@ -178,8 +217,15 @@ Notes:
   RAM.
 - The first iterations compile the updates into CUDA graphs, which takes a few
   minutes. `--compile none` skips this and runs eagerly.
-- Training adds a random 0 to 40 ms actuator delay by default (`--no-actuator-delay`
-  turns it off).
+- Training adds a random actuator delay of 0 to 20 ms by default, drawn once per
+  episode and held (`--actuator-delay-max-ms`, `--actuator-delay-fixed`): a real
+  robot's latency is steady. With a delay redrawn every physics step
+  (`--no-actuator-delay-fixed`, the earlier default, with 40 ms), our three-robot
+  policy kept re-stepping after a step on the real G1 once its command latency rose
+  by a few ms. `--no-actuator-delay` turns the delay off.
+- The recipe stops at 60,000 iterations, with the cosine decay still over its default
+  250,000 (`--lr-decay-iters`). Our later checkpoints of the same run (78,000 and on)
+  swayed while standing on the G1, with no sign of it in the training metrics.
 - `--wandb` logs to Weights & Biases, under `WANDB_ENTITY` and `WANDB_PROJECT` (default
   `morphmimic`) from the environment.
 - `uv run python -m morphmimic.scripts.train --help` lists every option.
@@ -202,7 +248,7 @@ uv run python -m morphmimic.scripts.train --robots g1 x2 t2 \
 ```
 
 - The anchor mode trains the motion interface only: it refuses `--kp-interface`,
-  because the five-point goals are position-free.
+  because the human goals are position-free.
 - A checkpoint keeps its anchor. Resuming or exporting it with the other one is refused
   with the flag to use.
 - Export with `--goal-anchor robot` (step 1 below); the anchor goes into each
@@ -212,10 +258,39 @@ uv run python -m morphmimic.scripts.train --robots g1 x2 t2 \
   `PoseSource` (`deploy/hardware/pose_source.py`). The G1 node has none yet: it sends
   no pose, and the policy node stops rather than act without one.
 
+## Evaluate
+
+The benchmark plays every clip of a subset once from its first frame, with a
+deterministic policy and no randomisation, and writes a per-clip table (completion,
+tracking errors, drift):
+
+```bash
+uv run python -m morphmimic.scripts.eval --ckpt logs/unified/g1/ckpt_60000.pt \
+  --subset-yaml $G1 --num-envs 1024                             # the motion interface
+uv run python -m morphmimic.scripts.eval --ckpt logs/unified/g1/ckpt_60000.pt \
+  --subset-yaml $G1 --interface human --human-points full       # or five
+```
+
+`scripts.play` and `scripts.render` show a checkpoint on a clip in mjlab;
+`--help` lists their options.
+
+## Robot models
+
+The X2 Ultra runs AgiBot's own joint gains with MuJoCo's built-in PD. The T2 runs
+Booster's deployment gains with a model of Booster's motors (the torque falls off with
+speed, as Booster's own training does). The earlier release of this repository (commit
+`aa40fe4`) used a DC-motor model for the X2 and other gains for the T2; numbers trained
+with it will not reproduce exactly with this code.
+
+`g1_amber` is the G1 with only its waist roll and pitch damping raised from 1.81 to
+3.0, for a robot whose waist motors are weak (ours). Everything else, the body, the
+reference motions and the deployment, is the G1's; on the robot it runs with
+`--robot g1_amber --hardware g1`.
+
 ## Deploy
 
-Deployment runs outside the training stack. A policy process (numpy and onnxruntime
-only) and a robot process talk over ZMQ. The robot process is either CPU MuJoCo
+Deployment runs outside the training stack. A policy process (numpy, onnx and
+onnxruntime only) and a robot process talk over ZMQ. The robot process is either CPU MuJoCo
 (sim2sim) or the real G1 (sim2real), and the policy process is the same in both cases.
 
 ### 1. The policy
@@ -225,10 +300,10 @@ robots and both interfaces, with one `<robot>.json` per robot (its normalisers,
 morphology vector and constants):
 
 ```bash
-uv run --group export python -m deploy.export_onnx logs/unified out/unified --iteration 40000
+uv run --group export python -m deploy.export_onnx logs/unified out/unified --iteration 60000
 ```
 
-A single-robot checkpoint (`logs/single_g1/ckpt_40000.pt`) exports the same way. The
+A single-robot checkpoint (`logs/single_g1/ckpt_60000.pt`) exports the same way. The
 export checks that ONNX reproduces the PyTorch actions before it writes anything.
 
 ### 2. Simulation assets (once per robot)
@@ -253,8 +328,9 @@ uv run --group export python -m deploy.run --deploy $W --assets assets \
   --robot g1 --clip walk_ff_loop_315_R_001__A257 --interface motion --viewer native
 ```
 
-- `--interface motion` tracks the whole reference; `--interface keypoint` tracks only
-  its five points.
+- `--interface motion` tracks the whole reference. `--interface human --human-points
+  full` (or `five`) tracks the human motion of the same clip instead; give its sidecar
+  with `--human-clip $DATA/seed_g1_npz50/human50/<session>/<clip>.npz`.
 - `--viewer native` opens MuJoCo's viewer. Without a display, use
   `MUJOCO_GL=egl ... --video out.mp4` instead.
 - `--delay-ms 20` adds actuator delay. At the end the run prints a summary: whether
@@ -281,15 +357,17 @@ One-time setup:
 Then run the streamer and the sim in two terminals:
 
 ```bash
-# Terminal 1: headset -> GMR retargeting -> robot references at 50 Hz
-uv run --group teleop python -m deploy.vr_teleop.streamer --robot x2
+# Terminal 1: headset -> the operator on the uniform skeleton at 50 Hz (no retargeting)
+uv run --group teleop python -m deploy.vr_teleop.streamer --target human
 
-# Terminal 2: policy and sim. Five-point interface:
+# Terminal 2: policy and sim, the human interface
 uv run --group export --group teleop python -m deploy.run --deploy $W \
-  --assets assets --robot x2 --teleop --interface keypoint --viewer native
+  --assets assets --robot x2 --teleop --interface human --human-points full --viewer native
 ```
 
-Use `--interface motion` to track the full retargeted body instead of the five points.
+`--human-points five` uses only your pelvis, wrists and ankles. For the motion
+interface, the streamer retargets you to the robot with GMR instead
+(`streamer --robot x2`, then `--interface motion`).
 
 Controls (A and B on the right controller, X and Y on the left):
 
@@ -306,8 +384,9 @@ room does not matter, since the goals are position-free. If the stream stops for
 the robot goes to IDLE. `--human-height 1.7` on the streamer scales the retargeting to
 your height (the default is 1.8 m).
 
-**Without a headset.** Record a session once with `streamer.py --record session.npz`,
-or make one from a G1 clip, and replay it for any robot:
+**Without a headset.** Record a session once with `streamer.py --record session.npz`
+and replay it for any robot and either interface (`--replay session.npz`), or make a
+GMR session from a G1 clip:
 
 ```bash
 uv run --group teleop python -m deploy.tools.make_gmr_session wave.npz \
@@ -325,6 +404,12 @@ returns to IDLE.
 In our paper, the shared policy from the 40,000-iteration unified run, exported as in
 step 1, dances, walks and follows a teleoperator on a physical G1.
 
+The default is to run everything on the G1's own computer, the headset talking to the
+robot directly: see [`deploy/onboard/`](deploy/onboard/README.md). The streamer (the
+PICO service and `streamer.py`) can also run on any machine on the robot's network; the
+policy node reads it from `--streamer tcp://<host>:5556`. The steps below instead drive
+the robot from a PC on its network.
+
 Once, on the PC connected to the robot:
 
 ```bash
@@ -340,8 +425,10 @@ uv run --group export --group teleop python -m deploy.run --deploy $W \
   --robot g1 --hardware g1 --net <iface> --interface motion --max-steps 1500
 ```
 
-Give `--assets assets --clip <name>` to play a motion, or `--teleop` to follow the
-headset. The robot's remote controls the node:
+Give `--assets assets --clip <name>` to play a motion, or `--teleop --interface human
+--human-points full` to follow the headset (the streamer with `--target human`).
+`--record ticks.npz` saves every policy tick: the measured joint positions and
+velocities, the IMU and the joint targets sent. The robot's remote controls the node:
 
 | Button | What happens |
 |---|---|
@@ -359,7 +446,7 @@ headset. The robot's remote controls the node:
   remote damps.
 - The gains are the training gains from `g1.json`. `--kp-scale` scales only the
   stiffness.
-- If no action arrives for 0.25 s, the robot does not damp. The targets blend to the PD
+- If no action arrives for 1 s, the robot does not damp. The targets blend to the PD
   stand and the policy restarts on the stand. Its first answer takes over again. B
   damps.
 - After `--max-steps N` steps, the robot blends back to the PD stand over 2 s and holds
@@ -407,8 +494,8 @@ chose differently:
   (`--no-bf16`).
 - Goals are position-free, so the policy runs from the IMU and joint encoders alone.
   This is fixed in the code, not a flag.
-- Training randomises the actuator delay (0 to 40 ms, resampled every physics step)
-  for robustness to latency on the real robot (`--no-actuator-delay`).
+- Training randomises the actuator delay (0 to 20 ms, drawn once per episode and
+  held) for robustness to latency on the real robot (`--no-actuator-delay`).
 
 See `train --help` for the full list of options.
 

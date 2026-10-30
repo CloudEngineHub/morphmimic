@@ -1,4 +1,4 @@
-"""Train a MorphMimic tracking policy (Algorithm A.1 of SuperMimic).
+"""Train a SuperMimic tracking policy (Algorithm A.1).
 
 Example (local smoke run):
   uv run python -m morphmimic.scripts.train \

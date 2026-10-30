@@ -9,7 +9,8 @@ randomisation, floor friction 1.0, no actuator delay) and writes:
   native joint order, default pose, action scale, the canonical joint map, the
   kinematic tree from the root to the slot-0 and anchor bodies, the control timing,
   the PD gains, and for DC-motor joints (the X2's) the torque-speed curve, which
-  `sim_node.py` applies to the explicit PD it computes for them. Committed.
+  `sim_node.py` applies to the explicit PD it computes for them. Committed;
+  `test_sim2sim.py` re-derives it.
 - `<out>/<robot>.xml` (meshes in `<out>/meshes/<robot>/`): the env's scene as plain,
   readable MJCF: the robot with the actuators, armature, floor, friction and solver
   options training used, which the robot's own MJCF does not hold. The export reloads
@@ -54,7 +55,8 @@ def fk_tree(m: mujoco.MjModel, native: list[str], root_body: str, slot0_body: st
   """The kinematic tree of `obs.Robot` (`fk`): the root body and every body between it
   and the slot-0, anchor and IMU bodies, root first, each with its parent, its
   position and orientation in the parent and its hinge joints (`native` index, axis,
-  reference angle)."""
+  reference angle). Raises ValueError for a hinge off its body's origin (`jnt_pos` not
+  zero): the tree has no joint offsets (none on the G1, X2 or T2)."""
 
   def body(name: str) -> int:
     i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, prefix + name)
@@ -85,6 +87,11 @@ def fk_tree(m: mujoco.MjModel, native: list[str], root_body: str, slot0_body: st
       if m.jnt_type[j] != mujoco.mjtJoint.mjJNT_HINGE:
         raise ValueError("only hinge joints below the root are supported")
       name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j).removeprefix(prefix)
+      if np.any(m.jnt_pos[j] != 0.0):
+        # `obs.Robot`'s forward kinematics rotates each body about its own origin.
+        raise ValueError(f"hinge {name} sits at {m.jnt_pos[j].tolist()} in its body, not"
+                         " at the body origin; the kinematic tree supports origin hinges"
+                         " only")
       joints.append({
         "name": name,
         "native_index": native.index(name),
@@ -156,12 +163,17 @@ def actuator_constants(spec, native: list[str]) -> dict:
   """Each native joint's PD gains and effort limit from the robot's actuator configs,
   and, when any joint is a DC motor (mjlab `DcMotorActuatorCfg`: explicit PD clipped to
   the torque-speed curve), each joint's stall torque and no-load speed (0 for the
-  built-in PD joints)."""
+  built-in PD joints) and the curve's law: "mjlab" (`DcMotorActuator`, full braking
+  torque at any speed) or "booster" (`BoosterMotorActuatorCfg`, the bound falls with
+  |v| in both directions); one law per robot."""
   from mjlab.actuator import BuiltinPositionActuatorCfg, DcMotorActuatorCfg
+
+  from morphmimic.robots.booster_motor import BoosterMotorActuatorCfg
 
   actuators = spec.entity_cfg_fn().articulation.actuators
   n = len(native)
   kp, kd, effort, sat, vmax = (np.zeros(n) for _ in range(5))
+  laws = set()
   for i, name in enumerate(native):
     hits = [a for a in actuators if any(re.fullmatch(e, name) for e in a.target_names_expr)]
     if len(hits) != 1:
@@ -172,9 +184,16 @@ def actuator_constants(spec, native: list[str]) -> dict:
     kp[i], kd[i], effort[i] = a.stiffness, a.damping, a.effort_limit
     if isinstance(a, DcMotorActuatorCfg):
       sat[i], vmax[i] = a.saturation_effort, a.velocity_limit
+      laws.add("booster" if isinstance(a, BoosterMotorActuatorCfg) else "mjlab")
+  if len(laws) > 1:
+    raise ValueError(f"{spec.name}: DC motors with both torque-speed laws")
   out = {"kp": kp.tolist(), "kd": kd.tolist(), "effort_limit": effort.tolist()}
   if vmax.any():
-    out["dc_motor"] = {"saturation_effort": sat.tolist(), "velocity_limit": vmax.tolist()}
+    out["dc_motor"] = {
+      "saturation_effort": sat.tolist(),
+      "velocity_limit": vmax.tolist(),
+      "law": laws.pop(),
+    }
   return out
 
 
@@ -287,7 +306,7 @@ def export_clips(env, robot: str, yaml_path: str, clips: list[str], out: Path) -
   import torch
 
   from morphmimic.robots import get_robot
-  from deploy.sim2sim.clip_playback import ClipPlayback, resolve_clip
+  from morphmimic.scripts.play import ClipPlayback, resolve_clip
 
   spec = get_robot(robot)
   m = env.sim.mj_model
@@ -324,7 +343,7 @@ def export_clips(env, robot: str, yaml_path: str, clips: list[str], out: Path) -
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-  parser.add_argument("--robot", required=True, choices=["g1", "x2", "t2"])
+  parser.add_argument("--robot", required=True, choices=["g1", "x2", "t2", "g1_amber"])
   parser.add_argument("--subset-yaml", required=True)
   parser.add_argument("--clips", nargs="+", required=True)
   parser.add_argument("--out", type=Path, required=True)
