@@ -546,6 +546,9 @@ def _export_onnx(policy: Policy, eps: float, inputs: dict[str, np.ndarray],
     model, args, input_names=names, output_names=outputs,
     dynamic_shapes=dynamic, opset_version=OPSET, dynamo=True, external_data=False,
   )
+  # The exporter stores each node's Python stack trace, with this machine's absolute paths.
+  for node in program.model.graph.all_nodes():
+    node.metadata_props.pop("pkg.torch.onnx.stack_trace", None)
   program.save(str(path), external_data=False)
 
 
