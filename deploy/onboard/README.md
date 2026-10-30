@@ -16,13 +16,17 @@ PICO headset --Wi-Fi--> robot computer: container morphmimic_pico (PC service ->
 
 ## PICO in a container (`pico/`)
 
-The robot computers run older Ubuntus than the XRoboToolkit PC service: its headless arm64
-build and the PICO SDK's `libPXREARobotSDK.so` need glibc 2.35 (Ubuntu 22.04; the G1's
-Jetson has 2.31). The image is Ubuntu 22.04 with the service's files (`dpkg-deb -x`; its Qt
-needs ICU 70, glib, double-conversion, pcre2-16 and dbus from apt; the GUI, X11, Wayland
-and SQL-server plugins stay unresolved and unused) and a Python 3.11 env with the SDK,
-numpy, pyzmq and msgpack at the repo's versions. arm64 only (the headless service exists
-for arm64 alone); needs the `docker` group, no sudo.
+The robot computers run an older Ubuntu than the XRoboToolkit PC service supports. Its
+headless arm64 build and the PICO SDK's `libPXREARobotSDK.so` need glibc 2.35 (Ubuntu
+22.04), and the G1's Jetson has 2.31. So the container is Ubuntu 22.04 with:
+
+- the service's files, unpacked with `dpkg-deb -x`. Its Qt needs ICU 70, glib,
+  double-conversion, pcre2-16 and dbus from apt; the GUI, X11, Wayland and SQL-server
+  plugins stay unresolved because the service does not use them.
+- a Python 3.11 env with the SDK, numpy, pyzmq and msgpack at the repo's versions.
+
+The image is arm64 only, because the headless service exists only for arm64. It needs
+the `docker` group, not sudo.
 
 ```bash
 bash deploy/onboard/pico/run.sh --target human [--record /data/session.npz]
