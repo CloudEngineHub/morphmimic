@@ -9,6 +9,13 @@ Lizhi Yang, Fengze Xie\*, Yuyang Wang\*, Lu Gan, Yisong Yue, Aaron D. Ames
 [[Video]](https://lzyang2000.github.io/morphmimic/static/videos/morphmimic.mp4)
 [[Live demo]](https://lzyang2000.github.io/morphmimic/demo/)
 
+**v0.1:** a human interface (the policy follows a PICO headset's body tracking
+directly, with all 24 joints or five points), a [pretrained policy](#pretrained-policy)
+for the G1, X2 Ultra and T2, `g1_amber` for a G1 with weak waist motors, a held
+actuator delay in training for robustness to latency on hardware, teleop running
+entirely on the G1's own computer ([`deploy/onboard/`](deploy/onboard/README.md)), and
+updated X2 Ultra and T2 models (vendor gains, Booster's motor model).
+
 > **Disclaimer.** MorphMimic builds on SuperMimic (Liao, Shao, Long, Zakka, Horowitz,
 > Abbeel and Sreenath, UC Berkeley; [citation below](#citation)). The base algorithm is
 > our own implementation of that paper, written from the paper alone. It is not the
@@ -307,7 +314,12 @@ W=morphmimic_policy
 
 Use `$W` wherever the steps below use an export, and skip step 1. Pass `--robot
 g1_amber` for the G1 (`--robot g1_amber --hardware g1` on the robot), or `--robot x2` /
-`--robot t2`. We have run it on a real G1 only; the X2 and the T2 ran in the sim.
+`--robot t2`.
+
+The policy is provided as is, with no warranty and no support. We have tested it on a
+real G1 only, where we picked this checkpoint; your G1 may behave differently. On the X2
+Ultra and the T2 it has run only in the sim: their sim2real tests are waiting for the
+robots. Start any robot hung or held, and keep the remote ready to damp it.
 
 ### 1. The policy
 
