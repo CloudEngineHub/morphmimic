@@ -290,6 +290,25 @@ Deployment does not need the training stack. A policy process (numpy, onnx and
 onnxruntime only) and a robot process talk over ZMQ. The robot process is either CPU
 MuJoCo (sim2sim) or the real G1 (sim2real); the policy process is the same for both.
 
+### Pretrained policy
+
+The policy we run on our G1 is attached to the
+[v0.1 release](https://github.com/lzyang2000/morphmimic/releases/tag/v0.1). It comes
+from the unified recipe with `--robots g1_amber x2 t2`, at 60,000 iterations, exported
+as in step 1. The one `policy.onnx` drives the G1 (as `g1_amber`), the X2 Ultra and the
+T2, through either interface.
+
+```bash
+curl -LO https://github.com/lzyang2000/morphmimic/releases/download/v0.1/morphmimic_policy.zip
+unzip morphmimic_policy.zip
+(cd morphmimic_policy && sha256sum -c SHA256SUMS)
+W=morphmimic_policy
+```
+
+Use `$W` wherever the steps below use an export, and skip step 1. Pass `--robot
+g1_amber` for the G1 (`--robot g1_amber --hardware g1` on the robot), or `--robot x2` /
+`--robot t2`. We have run it on a real G1 only; the X2 and the T2 ran in the sim.
+
 ### 1. The policy
 
 Export a trained run to ONNX. A multi-robot run gives one `policy.onnx` for all three
